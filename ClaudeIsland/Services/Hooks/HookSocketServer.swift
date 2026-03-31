@@ -12,7 +12,13 @@ import os.log
 /// Logger for hook socket server
 private let logger = Logger(subsystem: "com.claudeisland", category: "Hooks")
 
-/// Event received from Claude Code hooks
+enum HookResponseKind: String, Codable, Sendable {
+    case none
+    case permission
+    case interaction
+}
+
+/// Event received from AI coding agent hooks
 struct HookEvent: Codable, Sendable {
     let sessionId: String
     let cwd: String
@@ -25,6 +31,8 @@ struct HookEvent: Codable, Sendable {
     let toolUseId: String?
     let notificationType: String?
     let message: String?
+    let agentId: String
+    let rawPayload: [String: AnyCodable]?
 
     enum CodingKeys: String, CodingKey {
         case sessionId = "session_id"
@@ -33,10 +41,12 @@ struct HookEvent: Codable, Sendable {
         case toolUseId = "tool_use_id"
         case notificationType = "notification_type"
         case message
+        case agentId = "agent_id"
+        case rawPayload = "raw_payload"
     }
 
     /// Create a copy with updated toolUseId
-    init(sessionId: String, cwd: String, event: String, status: String, pid: Int?, tty: String?, tool: String?, toolInput: [String: AnyCodable]?, toolUseId: String?, notificationType: String?, message: String?) {
+    init(sessionId: String, cwd: String, event: String, status: String, pid: Int?, tty: String?, tool: String?, toolInput: [String: AnyCodable]?, toolUseId: String?, notificationType: String?, message: String?, agentId: String, rawPayload: [String: AnyCodable]? = nil) {
         self.sessionId = sessionId
         self.cwd = cwd
         self.event = event
@@ -48,11 +58,34 @@ struct HookEvent: Codable, Sendable {
         self.toolUseId = toolUseId
         self.notificationType = notificationType
         self.message = message
+        self.agentId = agentId
+        self.rawPayload = rawPayload
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionId = try container.decode(String.self, forKey: .sessionId)
+        cwd = try container.decodeIfPresent(String.self, forKey: .cwd) ?? ""
+        event = try container.decodeIfPresent(String.self, forKey: .event) ?? ""
+        status = try container.decodeIfPresent(String.self, forKey: .status) ?? "idle"
+        pid = try container.decodeIfPresent(Int.self, forKey: .pid)
+        tty = try container.decodeIfPresent(String.self, forKey: .tty)
+        tool = try container.decodeIfPresent(String.self, forKey: .tool)
+        toolInput = try container.decodeIfPresent([String: AnyCodable].self, forKey: .toolInput)
+        toolUseId = try container.decodeIfPresent(String.self, forKey: .toolUseId)
+        notificationType = try container.decodeIfPresent(String.self, forKey: .notificationType)
+        message = try container.decodeIfPresent(String.self, forKey: .message)
+        agentId = try container.decodeIfPresent(String.self, forKey: .agentId) ?? "claude"
+        rawPayload = try container.decodeIfPresent([String: AnyCodable].self, forKey: .rawPayload)
     }
 
     var sessionPhase: SessionPhase {
         if event == "PreCompact" {
             return .compacting
+        }
+
+        if responseKind == .interaction {
+            return .waitingForInput
         }
 
         switch status {
@@ -78,14 +111,42 @@ struct HookEvent: Codable, Sendable {
 
     /// Whether this event expects a response (permission request)
     nonisolated var expectsResponse: Bool {
-        event == "PermissionRequest" && status == "waiting_for_approval"
+        if event == "PermissionRequest" {
+            return true
+        }
+        if agentId == "claude" && event == "PreToolUse" && tool == "AskUserQuestion" {
+            return true
+        }
+        return agentId == "codex" && event == "PreToolUse" && status == "waiting_for_approval"
+    }
+
+    nonisolated var responseKind: HookResponseKind {
+        if event == "PermissionRequest" {
+            return .permission
+        }
+        if agentId == "claude" && event == "PreToolUse" && tool == "AskUserQuestion" {
+            return .interaction
+        }
+        if agentId == "codex" && event == "PreToolUse" && status == "waiting_for_approval" {
+            return .permission
+        }
+        return .none
+    }
+
+    nonisolated var expectsPermissionResponse: Bool {
+        responseKind == .permission
+    }
+
+    nonisolated var expectsInteractionResponse: Bool {
+        responseKind == .interaction
     }
 }
 
 /// Response to send back to the hook
 struct HookResponse: Codable {
-    let decision: String // "allow", "deny", or "ask"
+    let decision: String?
     let reason: String?
+    let updatedInput: AnyCodable?
 }
 
 /// Pending permission request waiting for user decision
@@ -216,6 +277,20 @@ class HookSocketServer {
     func respondToPermission(toolUseId: String, decision: String, reason: String? = nil) {
         queue.async { [weak self] in
             self?.sendPermissionResponse(toolUseId: toolUseId, decision: decision, reason: reason)
+        }
+    }
+
+    func respondToInteraction(toolUseId: String, updatedInput: [String: Any]) {
+        queue.async { [weak self] in
+            self?.sendHookResponse(
+                toolUseId: toolUseId,
+                response: HookResponse(
+                    decision: nil,
+                    reason: nil,
+                    updatedInput: AnyCodable(updatedInput)
+                ),
+                summary: "interaction"
+            )
         }
     }
 
@@ -436,19 +511,21 @@ class HookSocketServer {
 
             logger.debug("Permission request - keeping socket open for \(event.sessionId.prefix(8), privacy: .public) tool:\(toolUseId.prefix(12), privacy: .public)")
 
-            let updatedEvent = HookEvent(
-                sessionId: event.sessionId,
-                cwd: event.cwd,
-                event: event.event,
-                status: event.status,
+        let updatedEvent = HookEvent(
+            sessionId: event.sessionId,
+            cwd: event.cwd,
+            event: event.event,
+            status: event.status,
                 pid: event.pid,
                 tty: event.tty,
                 tool: event.tool,
                 toolInput: event.toolInput,
-                toolUseId: toolUseId,  // Use resolved toolUseId
-                notificationType: event.notificationType,
-                message: event.message
-            )
+            toolUseId: toolUseId,  // Use resolved toolUseId
+            notificationType: event.notificationType,
+            message: event.message,
+            agentId: event.agentId,
+            rawPayload: event.rawPayload
+        )
 
             let pending = PendingPermission(
                 sessionId: event.sessionId,
@@ -471,6 +548,14 @@ class HookSocketServer {
     }
 
     private func sendPermissionResponse(toolUseId: String, decision: String, reason: String?) {
+        sendHookResponse(
+            toolUseId: toolUseId,
+            response: HookResponse(decision: decision, reason: reason, updatedInput: nil),
+            summary: decision
+        )
+    }
+
+    private func sendHookResponse(toolUseId: String, response: HookResponse, summary: String) {
         permissionsLock.lock()
         guard let pending = pendingPermissions.removeValue(forKey: toolUseId) else {
             permissionsLock.unlock()
@@ -479,14 +564,13 @@ class HookSocketServer {
         }
         permissionsLock.unlock()
 
-        let response = HookResponse(decision: decision, reason: reason)
         guard let data = try? JSONEncoder().encode(response) else {
             close(pending.clientSocket)
             return
         }
 
         let age = Date().timeIntervalSince(pending.receivedAt)
-        logger.info("Sending response: \(decision, privacy: .public) for \(pending.sessionId.prefix(8), privacy: .public) tool:\(toolUseId.prefix(12), privacy: .public) (age: \(String(format: "%.1f", age), privacy: .public)s)")
+        logger.info("Sending response: \(summary, privacy: .public) for \(pending.sessionId.prefix(8), privacy: .public) tool:\(toolUseId.prefix(12), privacy: .public) (age: \(String(format: "%.1f", age), privacy: .public)s)")
 
         data.withUnsafeBytes { bytes in
             guard let baseAddress = bytes.baseAddress else {
@@ -520,7 +604,7 @@ class HookSocketServer {
         pendingPermissions.removeValue(forKey: pending.toolUseId)
         permissionsLock.unlock()
 
-        let response = HookResponse(decision: decision, reason: reason)
+        let response = HookResponse(decision: decision, reason: reason, updatedInput: nil)
         guard let data = try? JSONEncoder().encode(response) else {
             close(pending.clientSocket)
             permissionFailureHandler?(sessionId, pending.toolUseId)

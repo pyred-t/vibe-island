@@ -9,6 +9,8 @@ import AppKit
 import Combine
 import SwiftUI
 
+private let defaultInteractionPopDuration: TimeInterval = 12.0
+
 enum NotchStatus: Equatable {
     case closed
     case opened
@@ -45,6 +47,11 @@ class NotchViewModel: ObservableObject {
     @Published var openReason: NotchOpenReason = .unknown
     @Published var contentType: NotchContentType = .instances
     @Published var isHovering: Bool = false
+    @Published var interactionPopQueue: [InteractionPopState] = []
+    @Published var activeInteractionPop: InteractionPopState?
+    @Published var pendingExpandedSessionId: String?
+    @Published var pendingScrollToSessionId: String?
+    @Published private(set) var interactionQuestionProgress: [String: Int] = [:]
 
     // MARK: - Dependencies
 
@@ -78,10 +85,17 @@ class NotchViewModel: ObservableObject {
             )
         case .instances:
             return CGSize(
-                width: min(screenRect.width * 0.4, 480),
-                height: 320
+                width: min(screenRect.width * 0.58, 720),
+                height: 360
             )
         }
+    }
+
+    var interactionPopSize: CGSize {
+        CGSize(
+            width: min(screenRect.width * 0.54, 620),
+            height: 252
+        )
     }
 
     // MARK: - Animation
@@ -95,6 +109,7 @@ class NotchViewModel: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private let events = EventMonitors.shared
     private var hoverTimer: DispatchWorkItem?
+    private var interactionPopDismissTask: DispatchWorkItem?
 
     // MARK: - Initialization
 
@@ -248,6 +263,7 @@ class NotchViewModel: ObservableObject {
     }
 
     func notchClose() {
+        dismissActiveInteractionPop(advanceQueue: false)
         // Save chat session before closing if in chat mode
         if case .chat(let session) = contentType {
             currentChatSession = session
@@ -282,6 +298,139 @@ class NotchViewModel: ObservableObject {
     func exitChat() {
         currentChatSession = nil
         contentType = .instances
+    }
+
+    func enqueueInteractionPop(
+        for sessionId: String,
+        interaction: SessionInteractionRequest,
+        duration: TimeInterval = defaultInteractionPopDuration
+    ) {
+        let popState = InteractionPopState(
+            sessionId: sessionId,
+            interaction: interaction,
+            createdAt: Date()
+        )
+
+        let interactionId = interaction.id
+        if activeInteractionPop?.interaction.id == interactionId {
+            return
+        }
+        if interactionPopQueue.contains(where: { $0.interaction.id == interactionId }) {
+            return
+        }
+
+        interactionPopQueue.append(popState)
+        pendingExpandedSessionId = sessionId
+        pendingScrollToSessionId = sessionId
+
+        if activeInteractionPop == nil {
+            advanceInteractionPopQueue(duration: duration)
+        }
+    }
+
+    func advanceInteractionPopQueue(duration: TimeInterval = 5.0) {
+        interactionPopDismissTask?.cancel()
+
+        guard !interactionPopQueue.isEmpty else {
+            activeInteractionPop = nil
+            interactionPopDismissTask = nil
+            if status == .popping {
+                status = .closed
+            }
+            return
+        }
+
+        let nextPop = interactionPopQueue.removeFirst()
+        activeInteractionPop = nextPop
+
+        if status != .opened {
+            openReason = .notification
+            status = .popping
+        }
+
+        let dismissTask = DispatchWorkItem { [weak self] in
+            self?.dismissActiveInteractionPop()
+        }
+        interactionPopDismissTask = dismissTask
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: dismissTask)
+    }
+
+    func clearInteractionPop() {
+        interactionPopQueue.removeAll()
+        dismissActiveInteractionPop(advanceQueue: false)
+    }
+
+    func dismissActiveInteractionPop(advanceQueue: Bool = true) {
+        interactionPopDismissTask?.cancel()
+        interactionPopDismissTask = nil
+        activeInteractionPop = nil
+
+        guard advanceQueue, !interactionPopQueue.isEmpty else {
+            if status == .popping {
+                status = .closed
+            }
+            return
+        }
+
+        advanceInteractionPopQueue()
+    }
+
+    func clearInteraction(for sessionId: String, interactionId: String? = nil) {
+        if activeInteractionPop?.sessionId == sessionId,
+           interactionId == nil || activeInteractionPop?.interaction.id == interactionId {
+            dismissActiveInteractionPop()
+        }
+
+        interactionPopQueue.removeAll { popState in
+            popState.sessionId == sessionId &&
+                (interactionId == nil || popState.interaction.id == interactionId)
+        }
+
+        if pendingExpandedSessionId == sessionId {
+            pendingExpandedSessionId = nil
+        }
+        if pendingScrollToSessionId == sessionId {
+            pendingScrollToSessionId = nil
+        }
+
+        if let interactionId {
+            interactionQuestionProgress.removeValue(forKey: interactionId)
+        }
+    }
+
+    func pruneInteractionQueue(validInteractionIds: Set<String>) {
+        if let activeInteractionPop,
+           !validInteractionIds.contains(activeInteractionPop.interaction.id) {
+            dismissActiveInteractionPop()
+        }
+
+        interactionPopQueue.removeAll { !validInteractionIds.contains($0.interaction.id) }
+        interactionQuestionProgress = interactionQuestionProgress.filter { validInteractionIds.contains($0.key) }
+    }
+
+    func currentQuestionIndex(for interactionId: String, totalQuestions: Int) -> Int {
+        min(max(interactionQuestionProgress[interactionId] ?? 0, 0), max(totalQuestions - 1, 0))
+    }
+
+    func advanceInteractionQuestion(for interactionId: String, totalQuestions: Int) -> Bool {
+        let currentIndex = currentQuestionIndex(for: interactionId, totalQuestions: totalQuestions)
+        let nextIndex = currentIndex + 1
+
+        guard nextIndex < totalQuestions else {
+            interactionQuestionProgress.removeValue(forKey: interactionId)
+            return false
+        }
+
+        interactionQuestionProgress[interactionId] = nextIndex
+        return true
+    }
+
+    func consumePendingExpandedSession() {
+        pendingExpandedSessionId = nil
+    }
+
+    func consumePendingScrollTarget() {
+        pendingScrollToSessionId = nil
     }
 
     /// Perform boot animation: expand briefly then collapse

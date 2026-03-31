@@ -57,12 +57,21 @@ struct TerminalVisibilityDetector {
             return await TmuxTargetFinder.shared.isSessionPaneActive(claudePid: sessionPid)
         } else {
             // For non-tmux sessions, check if the session's terminal app is frontmost
-            guard let sessionTerminalPid = ProcessTreeBuilder.shared.findTerminalPid(forProcess: sessionPid, tree: tree),
+            guard let hostApp = HostApplicationResolver.shared.resolveHostApplication(forProcess: sessionPid, tree: tree),
                   let frontmostApp = NSWorkspace.shared.frontmostApplication else {
                 return false
             }
 
-            return sessionTerminalPid == Int(frontmostApp.processIdentifier)
+            if hostApp.activationPID == Int(frontmostApp.processIdentifier) {
+                return true
+            }
+
+            if let hostBundleId = hostApp.bundleIdentifier,
+               hostBundleId == frontmostApp.bundleIdentifier {
+                return true
+            }
+
+            return false
         }
     }
 }

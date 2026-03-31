@@ -61,7 +61,22 @@ class NotchViewController: NSViewController {
                     width: panelWidth,
                     height: panelHeight
                 )
-            case .closed, .popping:
+            case .popping:
+                if vm.activeInteractionPop != nil {
+                    let panelSize = vm.interactionPopSize
+                    let panelWidth = panelSize.width + 52
+                    let panelHeight = panelSize.height + 24
+                    let screenWidth = geometry.screenRect.width
+                    return CGRect(
+                        x: (screenWidth - panelWidth) / 2,
+                        y: windowHeight - panelHeight - 8,
+                        width: panelWidth,
+                        height: panelHeight
+                    )
+                }
+
+                fallthrough
+            case .closed:
                 // When closed, use the notch rect
                 let notchRect = geometry.deviceNotchRect
                 let screenWidth = geometry.screenRect.width

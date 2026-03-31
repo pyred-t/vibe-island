@@ -8,6 +8,26 @@
 import Combine
 import SwiftUI
 
+private struct WidthPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+extension View {
+    func readWidth(_ onChange: @escaping (CGFloat) -> Void) -> some View {
+        background(
+            GeometryReader { proxy in
+                Color.clear
+                    .preference(key: WidthPreferenceKey.self, value: proxy.size.width)
+            }
+        )
+        .onPreferenceChange(WidthPreferenceKey.self, perform: onChange)
+    }
+}
+
 struct ClaudeCrabIcon: View {
     let size: CGFloat
     let color: Color
@@ -18,7 +38,7 @@ struct ClaudeCrabIcon: View {
     // Timer for leg animation
     private let legTimer = Timer.publish(every: 0.15, on: .main, in: .common).autoconnect()
 
-    init(size: CGFloat = 16, color: Color = Color(red: 0.85, green: 0.47, blue: 0.34), animateLegs: Bool = false) {
+    init(size: CGFloat = 16, color: Color = TerminalColors.claude, animateLegs: Bool = false) {
         self.size = size
         self.color = color
         self.animateLegs = animateLegs
@@ -170,3 +190,22 @@ struct ReadyForInputIndicatorIcon: View {
     }
 }
 
+struct CompactSessionCountView: View {
+    let count: Int
+
+    var body: some View {
+        HStack(alignment: .lastTextBaseline, spacing: 5) {
+            Text("\(count)")
+                .font(.system(size: 19, weight: .bold, design: .rounded))
+                .foregroundColor(.white.opacity(0.94))
+                .lineLimit(1)
+
+            Text("sessions")
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundColor(.white.opacity(0.55))
+                .textCase(.lowercase)
+                .lineLimit(1)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+}

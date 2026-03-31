@@ -14,6 +14,7 @@ class ChatHistoryManager: ObservableObject {
     @Published private(set) var agentDescriptions: [String: [String: String]] = [:]
 
     private var loadedSessions: Set<String> = []
+    private var loadingSessions: Set<String> = []
     private var cancellables = Set<AnyCancellable>()
 
     private init() {
@@ -35,9 +36,23 @@ class ChatHistoryManager: ObservableObject {
         loadedSessions.contains(sessionId)
     }
 
-    func loadFromFile(sessionId: String, cwd: String) async {
-        guard !loadedSessions.contains(sessionId) else { return }
-        loadedSessions.insert(sessionId)
+    func loadFromFile(sessionId: String, cwd: String, forceReload: Bool = false) async {
+        let hasCachedHistory = !(histories[sessionId]?.isEmpty ?? true)
+
+        if loadingSessions.contains(sessionId) {
+            return
+        }
+
+        if loadedSessions.contains(sessionId) && (!forceReload || hasCachedHistory) {
+            return
+        }
+
+        loadingSessions.insert(sessionId)
+        defer {
+            loadingSessions.remove(sessionId)
+            loadedSessions.insert(sessionId)
+        }
+
         await SessionStore.shared.process(.loadHistory(sessionId: sessionId, cwd: cwd))
     }
 
@@ -65,6 +80,7 @@ class ChatHistoryManager: ObservableObject {
 
     func clearHistory(for sessionId: String) {
         loadedSessions.remove(sessionId)
+        loadingSessions.remove(sessionId)
         histories.removeValue(forKey: sessionId)
         Task {
             await SessionStore.shared.process(.sessionEnded(sessionId: sessionId))
@@ -80,10 +96,13 @@ class ChatHistoryManager: ObservableObject {
             let filteredItems = filterOutSubagentTools(session.chatItems)
             newHistories[session.sessionId] = filteredItems
             newAgentDescriptions[session.sessionId] = session.subagentState.agentDescriptions
-            loadedSessions.insert(session.sessionId)
         }
         histories = newHistories
         agentDescriptions = newAgentDescriptions
+
+        let activeSessionIds = Set(sessions.map(\.sessionId))
+        loadedSessions = loadedSessions.intersection(activeSessionIds)
+        loadingSessions = loadingSessions.intersection(activeSessionIds)
     }
 
     private func filterOutSubagentTools(_ items: [ChatHistoryItem]) -> [ChatHistoryItem] {

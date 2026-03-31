@@ -17,6 +17,20 @@ struct TerminalColors {
     static let dim = Color.white.opacity(0.4)
     static let dimmer = Color.white.opacity(0.2)
     static let prompt = Color(red: 0.85, green: 0.47, blue: 0.34)  // #d97857
+    static let claude = prompt
+    static let codex = Color(red: 0.2, green: 0.5, blue: 0.9)
+    static let gemini = Color(red: 0.95, green: 0.8, blue: 0.2)
     static let background = Color.white.opacity(0.05)
     static let backgroundHover = Color.white.opacity(0.1)
+
+    static func agentAccent(for agentId: String?) -> Color {
+        switch agentId {
+        case "codex":
+            return codex
+        case "gemini":
+            return gemini
+        default:
+            return claude
+        }
+    }
 }

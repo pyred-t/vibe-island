@@ -63,6 +63,9 @@ actor SessionStore {
         case .permissionSocketFailed(let sessionId, let toolUseId):
             await processSocketFailure(sessionId: sessionId, toolUseId: toolUseId)
 
+        case .interactionSubmitted(let sessionId, let toolUseId):
+            await processInteractionSubmitted(sessionId: sessionId, toolUseId: toolUseId)
+
         case .fileUpdated(let payload):
             await processFileUpdate(payload)
 
@@ -108,6 +111,14 @@ actor SessionStore {
         case .agentFileUpdated:
             // No longer used - subagent tools are populated from JSONL completion
             break
+
+        // MARK: - Process Detection Events
+
+        case .processDetected(let sessionId, let cwd, let agentId, let pid, let tty):
+            await processDetectedSession(sessionId: sessionId, cwd: cwd, agentId: agentId, pid: pid, tty: tty)
+
+        case .processSessionEnded(let sessionId):
+            processProcessSessionEnded(sessionId: sessionId)
         }
 
         publishState()
@@ -135,6 +146,10 @@ actor SessionStore {
         }
         session.lastActivity = Date()
 
+        Task { @MainActor in
+            AgentRegistry.shared.updatePrimaryAgent(withSessionFrom: event.agentId)
+        }
+
         if event.status == "ended" {
             sessions.removeValue(forKey: sessionId)
             cancelPendingSync(sessionId: sessionId)
@@ -149,7 +164,7 @@ actor SessionStore {
             Self.logger.debug("Invalid transition: \(String(describing: session.phase), privacy: .public) -> \(String(describing: newPhase), privacy: .public), ignoring")
         }
 
-        if event.event == "PermissionRequest", let toolUseId = event.toolUseId {
+        if event.expectsPermissionResponse, let toolUseId = event.toolUseId {
             Self.logger.debug("Setting tool \(toolUseId.prefix(12), privacy: .public) status to waitingForApproval")
             updateToolStatus(in: &session, toolId: toolUseId, status: .waitingForApproval)
         }
@@ -157,9 +172,17 @@ actor SessionStore {
         processToolTracking(event: event, session: &session)
         processSubagentTracking(event: event, session: &session)
 
+        if event.expectsPermissionResponse, let toolUseId = event.toolUseId {
+            Self.logger.debug("Setting tool \(toolUseId.prefix(12), privacy: .public) status to waitingForApproval")
+            updateToolStatus(in: &session, toolId: toolUseId, status: .waitingForApproval)
+        }
+        processNormalizedInteraction(event: event, session: &session)
+
         if event.event == "Stop" {
             session.subagentState = SubagentState()
         }
+
+        refreshInteractionState(for: &session)
 
         sessions[sessionId] = session
         publishState()
@@ -174,11 +197,246 @@ actor SessionStore {
             sessionId: event.sessionId,
             cwd: event.cwd,
             projectName: URL(fileURLWithPath: event.cwd).lastPathComponent,
+            agentId: event.agentId,
             pid: event.pid,
             tty: event.tty?.replacingOccurrences(of: "/dev/", with: ""),
             isInTmux: false,  // Will be updated
             phase: .idle
         )
+    }
+
+    private func createProcessSession(sessionId: String, cwd: String, agentId: String, pid: Int?, tty: String?) -> SessionState {
+        SessionState(
+            sessionId: sessionId,
+            cwd: cwd,
+            projectName: URL(fileURLWithPath: cwd).lastPathComponent,
+            agentId: agentId,
+            pid: pid,
+            tty: tty?.replacingOccurrences(of: "/dev/", with: ""),
+            isInTmux: false,
+            phase: .processing
+        )
+    }
+
+    // MARK: - Process Detection
+
+    private func processDetectedSession(sessionId: String, cwd: String, agentId: String, pid: Int?, tty: String?) async {
+        let isNew = sessions[sessionId] == nil
+
+        if isNew {
+            Mixpanel.mainInstance().track(event: "Session Started (\(agentId))")
+        }
+
+        var session = sessions[sessionId] ?? createProcessSession(
+            sessionId: sessionId,
+            cwd: cwd,
+            agentId: agentId,
+            pid: pid,
+            tty: tty
+        )
+
+        session.pid = pid
+        if let pid = pid {
+            let tree = ProcessTreeBuilder.shared.buildTree()
+            session.isInTmux = ProcessTreeBuilder.shared.isInTmux(pid: pid, tree: tree)
+        }
+        if let tty = tty {
+            session.tty = tty.replacingOccurrences(of: "/dev/", with: "")
+        }
+        session.lastActivity = Date()
+        session.phase = .processing
+        if let conversationInfo = parseConversationInfo(agentId: agentId, sessionId: sessionId, cwd: cwd) {
+            session.conversationInfo = conversationInfo
+        }
+        refreshInteractionState(for: &session)
+
+        sessions[sessionId] = session
+        publishState()
+
+        // Update primary agent
+        Task { @MainActor in
+            AgentRegistry.shared.updatePrimaryAgent(withSessionFrom: agentId)
+        }
+    }
+
+    private func parseConversationInfo(agentId: String, sessionId: String, cwd: String) -> ConversationInfo? {
+        switch agentId {
+        case "codex":
+            return CodexAgent().parseConversation(sessionId: sessionId, cwd: cwd)
+        case "gemini":
+            return GeminiCLIAgent().parseConversation(sessionId: sessionId, cwd: cwd)
+        case "claude":
+            return ClaudeCodeAgent().parseConversation(sessionId: sessionId, cwd: cwd)
+        default:
+            return nil
+        }
+    }
+
+    private func refreshInteractionState(for session: inout SessionState) {
+        let submitMode = SessionInteractionRequest.submitMode(isInTmux: session.isInTmux, tty: session.tty)
+
+        if let activePermission = session.activePermission,
+           let interaction = SessionInteractionRequest.from(
+                permission: activePermission,
+                sessionId: session.sessionId,
+                agentId: session.agentId,
+                submitMode: submitMode
+           ) {
+            session.activeInteraction = interaction
+            session.pendingInteractionCount = 1
+            return
+        }
+
+        if let normalizedInteraction = session.normalizedInteraction {
+            session.activeInteraction = normalizedInteraction
+            session.pendingInteractionCount = 1
+            return
+        }
+
+        switch session.agentId {
+        case "codex":
+            session.activeInteraction = CodexAgent().parseInteraction(
+                sessionId: session.sessionId,
+                cwd: session.cwd,
+                isInTmux: session.isInTmux,
+                tty: session.tty
+            )
+        case "gemini":
+            session.activeInteraction = GeminiCLIAgent().parseInteraction(
+                sessionId: session.sessionId,
+                cwd: session.cwd,
+                isInTmux: session.isInTmux,
+                tty: session.tty
+            )
+        default:
+            session.activeInteraction = nil
+        }
+
+        session.pendingInteractionCount = session.activeInteraction == nil ? 0 : 1
+    }
+
+    private func processNormalizedInteraction(event: HookEvent, session: inout SessionState) {
+        if event.agentId == "codex" {
+            switch event.event {
+            case HookEventType.preToolUse.rawValue:
+                guard event.tool == "request_user_input",
+                      let toolUseId = event.toolUseId else {
+                    return
+                }
+
+                let submitMode = SessionInteractionRequest.submitMode(
+                    isInTmux: session.isInTmux,
+                    tty: session.tty
+                )
+                session.normalizedInteraction = SessionInteractionRequest.fromToolInputPayload(
+                    sessionId: session.sessionId,
+                    toolUseId: toolUseId,
+                    payload: event.toolInput ?? [:],
+                    timestamp: Date(),
+                    sourceAgent: event.agentId,
+                    submitMode: submitMode
+                )
+
+            case HookEventType.postToolUse.rawValue:
+                guard let toolUseId = event.toolUseId else { return }
+                if session.normalizedInteraction?.toolUseId == toolUseId {
+                    session.normalizedInteraction = nil
+                }
+
+            case HookEventType.stop.rawValue:
+                session.normalizedInteraction = nil
+
+            default:
+                break
+            }
+            return
+        }
+
+        if event.agentId == "claude" {
+            switch event.event {
+            case HookEventType.preToolUse.rawValue:
+                guard event.tool == "AskUserQuestion",
+                      let toolUseId = event.toolUseId else {
+                    return
+                }
+
+                session.normalizedInteraction = SessionInteractionRequest.fromClaudeAskUserQuestion(
+                    sessionId: session.sessionId,
+                    toolUseId: toolUseId,
+                    payload: event.toolInput ?? [:],
+                    timestamp: Date(),
+                    sourceAgent: event.agentId,
+                    submitMode: .programmatic
+                )
+            case HookEventType.postToolUse.rawValue:
+                guard let toolUseId = event.toolUseId else { return }
+                if session.normalizedInteraction?.toolUseId == toolUseId {
+                    session.normalizedInteraction = nil
+                }
+            case HookEventType.stop.rawValue:
+                session.normalizedInteraction = nil
+            default:
+                break
+            }
+            return
+        }
+
+        switch event.event {
+        case HookEventType.interactionRequest.rawValue:
+            let submitMode = SessionInteractionRequest.submitMode(isInTmux: session.isInTmux, tty: session.tty)
+            session.normalizedInteraction = buildNormalizedInteraction(
+                from: event,
+                sessionId: session.sessionId,
+                submitMode: submitMode
+            )
+
+        case HookEventType.interactionResolved.rawValue:
+            let resolvedId = event.toolUseId
+            if resolvedId == nil || session.normalizedInteraction?.toolUseId == resolvedId {
+                session.normalizedInteraction = nil
+            }
+
+        default:
+            break
+        }
+    }
+
+    private func buildNormalizedInteraction(
+        from event: HookEvent,
+        sessionId: String,
+        submitMode: InteractionSubmitMode
+    ) -> SessionInteractionRequest? {
+        let createdAt = Date()
+        let interactionId = event.toolUseId ?? "\(sessionId)-interaction"
+
+        if let toolInput = event.toolInput {
+            return SessionInteractionRequest.fromToolInputPayload(
+                sessionId: sessionId,
+                toolUseId: interactionId,
+                payload: toolInput,
+                timestamp: createdAt,
+                sourceAgent: event.agentId,
+                submitMode: submitMode
+            )
+        }
+
+        if let message = event.message {
+            return SessionInteractionRequest.fromHeuristicText(
+                sessionId: sessionId,
+                interactionId: interactionId,
+                sourceAgent: event.agentId,
+                text: message,
+                timestamp: createdAt,
+                submitMode: submitMode
+            )
+        }
+
+        return nil
+    }
+
+    private func processProcessSessionEnded(sessionId: String) {
+        sessions.removeValue(forKey: sessionId)
+        publishState()
     }
 
     private func processToolTracking(event: HookEvent, session: inout SessionState) {
@@ -284,6 +542,24 @@ actor SessionStore {
         sessions[sessionId] = session
     }
 
+    private func processInteractionSubmitted(sessionId: String, toolUseId: String?) async {
+        guard var session = sessions[sessionId] else { return }
+
+        if toolUseId == nil || session.normalizedInteraction?.toolUseId == toolUseId {
+            session.normalizedInteraction = nil
+        }
+
+        refreshInteractionState(for: &session)
+
+        if session.activePermission == nil,
+           session.activeInteraction == nil,
+           session.phase.canTransition(to: .processing) {
+            session.phase = .processing
+        }
+
+        sessions[sessionId] = session
+    }
+
     /// Handle subagent tool executed event
     private func processSubagentToolExecuted(sessionId: String, tool: SubagentToolCall) {
         guard var session = sessions[sessionId] else { return }
@@ -350,6 +626,7 @@ actor SessionStore {
             }
         }
 
+        refreshInteractionState(for: &session)
         sessions[sessionId] = session
     }
 
@@ -404,6 +681,7 @@ actor SessionStore {
             }
         }
 
+        refreshInteractionState(for: &session)
         sessions[sessionId] = session
     }
 
@@ -451,6 +729,7 @@ actor SessionStore {
             }
         }
 
+        refreshInteractionState(for: &session)
         sessions[sessionId] = session
     }
 
@@ -483,6 +762,7 @@ actor SessionStore {
             }
         }
 
+        refreshInteractionState(for: &session)
         sessions[sessionId] = session
     }
 
@@ -623,6 +903,8 @@ actor SessionStore {
             cwd: payload.cwd,
             structuredResults: payload.structuredResults
         )
+
+        refreshInteractionState(for: &session)
 
         sessions[payload.sessionId] = session
 
@@ -821,6 +1103,7 @@ actor SessionStore {
             session.phase = .idle
         }
 
+        refreshInteractionState(for: &session)
         sessions[sessionId] = session
     }
 
@@ -834,6 +1117,7 @@ actor SessionStore {
         // Mark that a clear happened - the next fileUpdated will reconcile
         // by removing items that no longer exist in the parser's state
         session.needsClearReconciliation = true
+        refreshInteractionState(for: &session)
         sessions[sessionId] = session
 
         Self.logger.info("/clear processed for session \(sessionId.prefix(8), privacy: .public) - marked for reconciliation")
@@ -849,6 +1133,37 @@ actor SessionStore {
     // MARK: - History Loading
 
     private func loadHistoryFromFile(sessionId: String, cwd: String) async {
+        if let session = sessions[sessionId] {
+            switch session.agentId {
+            case "codex":
+                let messages = CodexAgent().parseFullConversation(sessionId: sessionId, cwd: cwd)
+                let conversationInfo = CodexAgent().parseConversation(sessionId: sessionId, cwd: cwd) ?? session.conversationInfo
+                await process(.historyLoaded(
+                    sessionId: sessionId,
+                    messages: messages,
+                    completedTools: [],
+                    toolResults: [:],
+                    structuredResults: [:],
+                    conversationInfo: conversationInfo
+                ))
+                return
+            case "gemini":
+                let messages = GeminiCLIAgent().parseFullConversation(sessionId: sessionId, cwd: cwd)
+                let conversationInfo = GeminiCLIAgent().parseConversation(sessionId: sessionId, cwd: cwd) ?? session.conversationInfo
+                await process(.historyLoaded(
+                    sessionId: sessionId,
+                    messages: messages,
+                    completedTools: [],
+                    toolResults: [:],
+                    structuredResults: [:],
+                    conversationInfo: conversationInfo
+                ))
+                return
+            default:
+                break
+            }
+        }
+
         // Parse file asynchronously
         let messages = await ConversationParser.shared.parseFullConversation(
             sessionId: sessionId,
@@ -912,6 +1227,7 @@ actor SessionStore {
 
         // Sort by timestamp
         session.chatItems.sort { $0.timestamp < $1.timestamp }
+        refreshInteractionState(for: &session)
 
         sessions[sessionId] = session
     }

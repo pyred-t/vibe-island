@@ -9,6 +9,7 @@ import os
 import socket
 import sys
 
+AGENT_ID = "claude"
 SOCKET_PATH = "/tmp/claude-island.sock"
 TIMEOUT_SECONDS = 300  # 5 minutes for permission decisions
 
@@ -57,8 +58,12 @@ def send_event(state):
         sock.connect(SOCKET_PATH)
         sock.sendall(json.dumps(state).encode())
 
-        # For permission requests, wait for response
-        if state.get("status") == "waiting_for_approval":
+        should_wait = state.get("status") == "waiting_for_approval" or (
+            state.get("event") == "PreToolUse"
+            and state.get("tool") == "AskUserQuestion"
+        )
+
+        if should_wait:
             response = sock.recv(4096)
             sock.close()
             if response:
@@ -93,6 +98,8 @@ def main():
         "event": event,
         "pid": claude_pid,
         "tty": tty,
+        "agent_id": AGENT_ID,
+        "raw_payload": data,
     }
 
     # Map events to status
@@ -101,13 +108,34 @@ def main():
         state["status"] = "processing"
 
     elif event == "PreToolUse":
-        state["status"] = "running_tool"
-        state["tool"] = data.get("tool_name")
+        tool_name = data.get("tool_name")
+        state["tool"] = tool_name
         state["tool_input"] = tool_input
         # Send tool_use_id to Swift for caching
         tool_use_id_from_event = data.get("tool_use_id")
         if tool_use_id_from_event:
             state["tool_use_id"] = tool_use_id_from_event
+
+        if tool_name == "AskUserQuestion":
+            state["status"] = "waiting_for_input"
+            response = send_event(state)
+            if response and response.get("updatedInput") is not None:
+                print(
+                    json.dumps(
+                        {
+                            "hookSpecificOutput": {
+                                "hookEventName": "PreToolUse",
+                                "permissionDecision": "allow",
+                                "updatedInput": response.get("updatedInput"),
+                            }
+                        }
+                    )
+                )
+                sys.exit(0)
+
+            sys.exit(0)
+
+        state["status"] = "running_tool"
 
     elif event == "PostToolUse":
         state["status"] = "processing"

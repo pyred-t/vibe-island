@@ -48,6 +48,21 @@ actor ToolApprovalHandler {
         await sendKeys(to: target, keys: message, pressEnter: true)
     }
 
+    /// Send multiple sequential messages to a tmux target
+    func sendMessages(_ messages: [String], to target: TmuxTarget) async -> Bool {
+        for (index, message) in messages.enumerated() {
+            guard await sendMessage(message, to: target) else {
+                return false
+            }
+
+            if index < messages.count - 1 {
+                try? await Task.sleep(for: .milliseconds(120))
+            }
+        }
+
+        return true
+    }
+
     // MARK: - Private Methods
 
     private func sendKeys(to target: TmuxTarget, keys: String, pressEnter: Bool) async -> Bool {

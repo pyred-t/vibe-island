@@ -27,6 +27,9 @@ enum SessionEvent: Sendable {
     /// Permission socket failed (connection died before response)
     case permissionSocketFailed(sessionId: String, toolUseId: String)
 
+    /// User answered a pending structured interaction via the native hook path
+    case interactionSubmitted(sessionId: String, toolUseId: String?)
+
     // MARK: - File Events (from ConversationParser)
 
     /// JSONL file was updated with new content
@@ -75,6 +78,14 @@ enum SessionEvent: Sendable {
 
     /// History load completed
     case historyLoaded(sessionId: String, messages: [ChatMessage], completedTools: Set<String>, toolResults: [String: ConversationParser.ToolResult], structuredResults: [String: ToolResultData], conversationInfo: ConversationInfo)
+
+    // MARK: - Process Detection (for agents without hooks)
+
+    /// A session was detected via process monitoring (Codex, Gemini CLI, etc.)
+    case processDetected(sessionId: String, cwd: String, agentId: String, pid: Int?, tty: String?)
+
+    /// A process-detected session has ended
+    case processSessionEnded(sessionId: String)
 }
 
 /// Payload for file update events
@@ -135,7 +146,7 @@ extension HookEvent {
         }
 
         // Permission request creates waitingForApproval state
-        if expectsResponse, let tool = tool {
+        if expectsPermissionResponse, let tool = tool {
             return .waitingForApproval(PermissionContext(
                 toolUseId: toolUseId ?? "",
                 toolName: tool,
@@ -144,8 +155,16 @@ extension HookEvent {
             ))
         }
 
+        if expectsInteractionResponse {
+            return .waitingForInput
+        }
+
         if event == "Notification" && notificationType == "idle_prompt" {
-            return .idle
+            return .waitingForInput
+        }
+
+        if event == HookEventType.interactionRequest.rawValue {
+            return .waitingForInput
         }
 
         switch status {
@@ -169,6 +188,7 @@ extension HookEvent {
 
     /// Whether this event should trigger a file sync
     nonisolated var shouldSyncFile: Bool {
+        guard agentId == "claude" else { return false }
         switch event {
         case "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop":
             return true
@@ -191,6 +211,9 @@ extension SessionEvent: CustomStringConvertible {
             return "permissionDenied(session: \(sessionId.prefix(8)), tool: \(toolUseId.prefix(12)))"
         case .permissionSocketFailed(let sessionId, let toolUseId):
             return "permissionSocketFailed(session: \(sessionId.prefix(8)), tool: \(toolUseId.prefix(12)))"
+        case .interactionSubmitted(let sessionId, let toolUseId):
+            let toolLabel = toolUseId.map { String($0.prefix(12)) } ?? "none"
+            return "interactionSubmitted(session: \(sessionId.prefix(8)), tool: \(toolLabel))"
         case .fileUpdated(let payload):
             return "fileUpdated(session: \(payload.sessionId.prefix(8)), messages: \(payload.messages.count))"
         case .interruptDetected(let sessionId):
@@ -215,6 +238,10 @@ extension SessionEvent: CustomStringConvertible {
             return "subagentStopped(session: \(sessionId.prefix(8)), task: \(taskToolId.prefix(12)))"
         case .agentFileUpdated(let sessionId, let taskToolId, let tools):
             return "agentFileUpdated(session: \(sessionId.prefix(8)), task: \(taskToolId.prefix(12)), tools: \(tools.count))"
+        case .processDetected(let sessionId, let cwd, let agentId, let pid, _):
+            return "processDetected(session: \(sessionId.prefix(8)), agent: \(agentId), cwd: \(cwd), pid: \(pid ?? -1))"
+        case .processSessionEnded(let sessionId):
+            return "processSessionEnded(session: \(sessionId.prefix(8)))"
         }
     }
 }

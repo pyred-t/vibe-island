@@ -1,16 +1,19 @@
 //
-//  ClaudeInstancesView.swift
+//  AgentInstancesView.swift
 //  ClaudeIsland
 //
-//  Minimal instances list matching Dynamic Island aesthetic
+//  Instances list for all AI agents (Claude Code, Codex, Gemini CLI, etc.)
 //
 
+import AppKit
 import Combine
 import SwiftUI
 
-struct ClaudeInstancesView: View {
+struct AgentInstancesView: View {
     @ObservedObject var sessionMonitor: ClaudeSessionMonitor
     @ObservedObject var viewModel: NotchViewModel
+    @State private var expandedSessionIds: Set<String> = []
+    @State private var scheduledScrollSessionId: String?
 
     var body: some View {
         if sessionMonitor.instances.isEmpty {
@@ -28,7 +31,7 @@ struct ClaudeInstancesView: View {
                 .font(.system(size: 13, weight: .medium))
                 .foregroundColor(.white.opacity(0.4))
 
-            Text("Run claude in terminal")
+            Text("Run claude, codex, or gemini")
                 .font(.system(size: 11))
                 .foregroundColor(.white.opacity(0.25))
         }
@@ -42,6 +45,12 @@ struct ClaudeInstancesView: View {
     /// Note: approval requests stay in their date-based position to avoid layout shift
     private var sortedInstances: [SessionState] {
         sessionMonitor.instances.sorted { a, b in
+            let hasInteractionA = a.activeInteraction != nil
+            let hasInteractionB = b.activeInteraction != nil
+            if hasInteractionA != hasInteractionB {
+                return hasInteractionA && !hasInteractionB
+            }
+
             let priorityA = phasePriority(a.phase)
             let priorityB = phasePriority(b.phase)
             if priorityA != priorityB {
@@ -66,37 +75,93 @@ struct ClaudeInstancesView: View {
     }
 
     private var instancesList: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            LazyVStack(spacing: 2) {
-                ForEach(sortedInstances) { session in
-                    InstanceRow(
-                        session: session,
-                        onFocus: { focusSession(session) },
-                        onChat: { openChat(session) },
-                        onArchive: { archiveSession(session) },
-                        onApprove: { approveSession(session) },
-                        onReject: { rejectSession(session) }
-                    )
-                    .id(session.stableId)
+        ScrollViewReader { proxy in
+            ScrollView(.vertical, showsIndicators: false) {
+                LazyVStack(spacing: 2) {
+                    ForEach(sortedInstances) { session in
+                        AgentInstanceRow(
+                            session: session,
+                            isExpanded: expandedSessionIds.contains(session.sessionId),
+                            isInteractionSubmitting: sessionMonitor.submittingInteractionSessionIds.contains(session.sessionId),
+                            interactionSubmitError: sessionMonitor.interactionSubmitErrors[session.sessionId],
+                            onShare: { shareSession(session) },
+                            onChat: { openChat(session) },
+                            onArchive: { archiveSession(session) },
+                            onApprove: { approveSession(session) },
+                            onReject: { rejectSession(session) },
+                            onToggleExpanded: { toggleExpanded(sessionId: session.sessionId) },
+                            onOpenHostApp: {
+                                Task {
+                                    _ = await sessionMonitor.focusSession(sessionId: session.sessionId)
+                                }
+                            },
+                            onSubmitInteractionResponses: { responses in
+                                handleInteractionResponseSelection(session: session, responses: responses)
+                            }
+                        )
+                        .id(session.sessionId)
+                    }
                 }
+                .padding(.horizontal, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 4)
             }
-            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .scrollBounceBehavior(.basedOnSize)
+            .onAppear {
+                handlePendingExpansionIfNeeded(with: proxy)
+            }
+            .onChange(of: viewModel.pendingExpandedSessionId) { _, _ in
+                handlePendingExpansionIfNeeded(with: proxy)
+            }
+            .onChange(of: scheduledScrollSessionId) { _, sessionId in
+                guard let sessionId else { return }
+                performDeferredScroll(to: sessionId, with: proxy)
+            }
+            .onChange(of: sessionMonitor.instances) { _, _ in
+                pruneExpandedSessions()
+            }
         }
-        .scrollBounceBehavior(.basedOnSize)
     }
 
     // MARK: - Actions
 
-    private func focusSession(_ session: SessionState) {
-        guard session.isInTmux else { return }
-
+    private func shareSession(_ session: SessionState) {
         Task {
-            if let pid = session.pid {
-                _ = await YabaiController.shared.focusWindow(forClaudePid: pid)
-            } else {
-                _ = await YabaiController.shared.focusWindow(forWorkingDirectory: session.cwd)
+            let didFocus = await focusSessionWindow(session)
+            if !didFocus {
+                await MainActor.run {
+                    openChat(session)
+                }
             }
         }
+    }
+
+    private func focusSessionWindow(_ session: SessionState) async -> Bool {
+        if session.isInTmux {
+            if let pid = session.pid,
+               await YabaiController.shared.focusWindow(forClaudePid: pid) {
+                return true
+            }
+
+            if await YabaiController.shared.focusWindow(forWorkingDirectory: session.cwd) {
+                return true
+            }
+        }
+
+        return activateHostApp(for: session)
+    }
+
+    private func activateHostApp(for session: SessionState) -> Bool {
+        guard let pid = session.pid else { return false }
+
+        let tree = ProcessTreeBuilder.shared.buildTree()
+        guard let hostApp = HostApplicationResolver.shared.resolveHostApplication(forProcess: pid, tree: tree),
+              let app = NSRunningApplication(processIdentifier: pid_t(hostApp.activationPID)) else {
+            return false
+        }
+
+        return app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
     }
 
     private func openChat(_ session: SessionState) {
@@ -114,171 +179,315 @@ struct ClaudeInstancesView: View {
     private func archiveSession(_ session: SessionState) {
         sessionMonitor.archiveSession(sessionId: session.sessionId)
     }
+
+    private func toggleExpanded(sessionId: String) {
+        if expandedSessionIds.contains(sessionId) {
+            expandedSessionIds.remove(sessionId)
+        } else {
+            expandedSessionIds.insert(sessionId)
+        }
+    }
+
+    private func pruneExpandedSessions() {
+        let validIds = Set(sessionMonitor.instances.map(\.sessionId))
+        expandedSessionIds = expandedSessionIds.intersection(validIds)
+    }
+
+    private func handlePendingExpansionIfNeeded(with proxy: ScrollViewProxy) {
+        guard viewModel.contentType == .instances,
+              let sessionId = viewModel.pendingExpandedSessionId else {
+            return
+        }
+
+        let validIds = Set(sessionMonitor.instances.map(\.sessionId))
+        guard validIds.contains(sessionId) else {
+            viewModel.consumePendingExpandedSession()
+            viewModel.consumePendingScrollTarget()
+            return
+        }
+
+        expandedSessionIds.insert(sessionId)
+
+        let scrollTarget = viewModel.pendingScrollToSessionId ?? sessionId
+        scheduledScrollSessionId = scrollTarget
+        viewModel.consumePendingExpandedSession()
+        viewModel.consumePendingScrollTarget()
+    }
+
+    private func performDeferredScroll(to sessionId: String, with proxy: ScrollViewProxy) {
+        let validIds = Set(sessionMonitor.instances.map(\.sessionId))
+        guard validIds.contains(sessionId) else {
+            scheduledScrollSessionId = nil
+            return
+        }
+
+        DispatchQueue.main.async {
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
+                proxy.scrollTo(sessionId, anchor: .center)
+            }
+            scheduledScrollSessionId = nil
+        }
+    }
+
+    private func handleInteractionOptionSelection(session: SessionState, option: InteractionOption) {
+        let questionId = session.activeInteraction?.questions.first?.id ?? "question-0"
+        handleInteractionResponseSelection(
+            session: session,
+            responses: [InteractionResponse(questionId: questionId, option: option)]
+        )
+    }
+
+    private func handleInteractionResponseSelection(session: SessionState, responses: [InteractionResponse]) {
+        Task {
+            let result = await sessionMonitor.submitInteraction(sessionId: session.sessionId, responses: responses)
+            if result.succeeded {
+                await MainActor.run {
+                    expandedSessionIds.remove(session.sessionId)
+                    if let interaction = session.activeInteraction {
+                        viewModel.clearInteraction(for: session.sessionId, interactionId: interaction.id)
+                    }
+                }
+            }
+        }
+    }
 }
 
 // MARK: - Instance Row
 
-struct InstanceRow: View {
+struct AgentInstanceRow: View {
     let session: SessionState
-    let onFocus: () -> Void
+    let isExpanded: Bool
+    let isInteractionSubmitting: Bool
+    let interactionSubmitError: String?
+    let onShare: () -> Void
     let onChat: () -> Void
     let onArchive: () -> Void
     let onApprove: () -> Void
     let onReject: () -> Void
+    let onToggleExpanded: () -> Void
+    let onOpenHostApp: () -> Void
+    let onSubmitInteractionResponses: ([InteractionResponse]) -> Void
 
     @State private var isHovered = false
-    @State private var spinnerPhase = 0
     @State private var isYabaiAvailable = false
 
-    private let claudeOrange = Color(red: 0.85, green: 0.47, blue: 0.34)
-    private let spinnerSymbols = ["·", "✢", "✳", "∗", "✻", "✽"]
-    private let spinnerTimer = Timer.publish(every: 0.15, on: .main, in: .common).autoconnect()
+    /// Agent-specific accent color
+    private var agentAccentColor: Color {
+        TerminalColors.agentAccent(for: session.agentId)
+    }
 
     /// Whether we're showing the approval UI
     private var isWaitingForApproval: Bool {
         session.phase.isWaitingForApproval
     }
 
-    /// Whether the pending tool requires interactive input (not just approve/deny)
-    private var isInteractiveTool: Bool {
-        guard let toolName = session.pendingToolName else { return false }
-        return toolName == "AskUserQuestion"
+    private var activeInteraction: SessionInteractionRequest? {
+        if let interaction = session.activeInteraction {
+            return interaction
+        }
+
+        guard let permission = session.activePermission else {
+            return nil
+        }
+
+        return SessionInteractionRequest.from(
+            permission: permission,
+            sessionId: session.sessionId,
+            agentId: session.agentId,
+            submitMode: SessionInteractionRequest.submitMode(isInTmux: session.isInTmux, tty: session.tty)
+        )
+    }
+
+    private var canSubmitInteractionDirectly: Bool {
+        activeInteraction?.submitMode == .ttyInjection || activeInteraction?.submitMode == .programmatic
+    }
+
+    private var agentDisplayName: String {
+        AgentRegistry.shared.shortDisplayName(for: session.agentId)
+    }
+
+    private var hostAppName: String {
+        guard let pid = session.pid else { return "Unknown App" }
+
+        let tree = ProcessTreeBuilder.shared.buildTree()
+        return HostApplicationResolver.shared
+            .resolveHostApplication(forProcess: pid, tree: tree)?
+            .displayName ?? "Unknown App"
+    }
+
+    private var userPromptPreview: String {
+        session.lastUserMessage ?? session.firstUserMessage ?? session.displayTitle
+    }
+
+    private var lastAssistantOutput: String? {
+        for item in session.chatItems.reversed() {
+            switch item.type {
+            case .assistant(let text), .thinking(let text):
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    return trimmed
+                }
+            default:
+                continue
+            }
+        }
+
+        guard session.lastMessageRole == "assistant" else { return nil }
+        return session.lastMessage
+    }
+
+    private var lastVisibleToolCall: ToolCallItem? {
+        for item in session.chatItems.reversed() {
+            if case .toolCall(let tool) = item.type,
+               tool.name != "Task" {
+                return tool
+            }
+        }
+        return nil
+    }
+
+    private var lastBashCommand: String? {
+        for item in session.chatItems.reversed() {
+            guard case .toolCall(let tool) = item.type else { continue }
+            if tool.name == "Bash", let command = tool.input["command"], !command.isEmpty {
+                return command
+            }
+        }
+
+        if session.lastToolName == "Bash", let command = session.lastMessage, !command.isEmpty {
+            return command
+        }
+
+        return nil
+    }
+
+    private var requestUserInputContext: String {
+        lastBashCommand ??
+        lastAssistantOutput ??
+        session.pendingToolInput ??
+        session.lastMessage ??
+        "Needs your input"
+    }
+
+    private var latestActionDisplay: ActionTextDisplay {
+        if isWaitingForApproval, let toolName = session.pendingToolName {
+            if toolName == "AskUserQuestion" {
+                return .highlighted(label: "request user input", detail: requestUserInputContext, color: TerminalColors.amber)
+            }
+
+            if toolName == "Bash",
+               let command = session.pendingToolInput,
+               !command.isEmpty {
+                return .highlighted(label: "Bash", detail: command, color: agentAccentColor)
+            }
+
+            if let input = session.pendingToolInput, !input.isEmpty {
+                return .plain("\(MCPToolFormatter.formatToolName(toolName)): \(input)")
+            }
+
+            return .plain("\(MCPToolFormatter.formatToolName(toolName)): waiting for approval")
+        }
+
+        if let assistant = lastAssistantOutput, !assistant.isEmpty {
+            return .plain(assistant)
+        }
+
+        if let tool = lastVisibleToolCall {
+            if tool.name == "AskUserQuestion" {
+                return .highlighted(label: "request user input", detail: requestUserInputContext, color: TerminalColors.amber)
+            }
+
+            if tool.name == "Bash", let command = tool.input["command"], !command.isEmpty {
+                return .highlighted(label: "Bash", detail: command, color: agentAccentColor)
+            }
+
+            let preview = tool.inputPreview
+            if !preview.isEmpty {
+                return .plain("\(MCPToolFormatter.formatToolName(tool.name)): \(preview)")
+            }
+
+            return .plain(MCPToolFormatter.formatToolName(tool.name))
+        }
+
+        if session.phase == .waitingForInput {
+            return .plain("Ready for your next message")
+        }
+
+        return .plain(session.lastMessage ?? "No recent agent action")
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
-            // State indicator on left
-            stateIndicator
-                .frame(width: 14)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 12) {
+                ClaudeCrabIcon(
+                    size: 34,
+                    color: agentAccentColor,
+                    animateLegs: session.phase == .processing || session.phase == .compacting
+                )
+                .frame(width: 46, height: 62, alignment: .center)
 
-            // Text content
-            VStack(alignment: .leading, spacing: 2) {
-                Text(session.displayTitle)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.white)
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        Text(session.displayTitle)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.white)
+                            .lineLimit(1)
 
-                // Show tool call when waiting for approval, otherwise last activity
-                if isWaitingForApproval, let toolName = session.pendingToolName {
-                    // Show tool name in amber + input on same line
-                    HStack(spacing: 4) {
-                        Text(MCPToolFormatter.formatToolName(toolName))
-                            .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .foregroundColor(TerminalColors.amber.opacity(0.9))
-                        if isInteractiveTool {
-                            Text("Needs your input")
-                                .font(.system(size: 11))
-                                .foregroundColor(.white.opacity(0.5))
-                                .lineLimit(1)
-                        } else if let input = session.pendingToolInput {
-                            Text(input)
-                                .font(.system(size: 11))
-                                .foregroundColor(.white.opacity(0.5))
-                                .lineLimit(1)
-                        }
+                        Spacer(minLength: 12)
+
+                        Text(agentDisplayName)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(agentAccentColor.opacity(0.95))
+                            .lineLimit(1)
+
+                        Text(hostAppName)
+                            .font(.system(size: 11))
+                            .foregroundColor(.white.opacity(0.42))
+                            .lineLimit(1)
+
+                        actionControls
                     }
-                } else if let role = session.lastMessageRole {
-                    switch role {
-                    case "tool":
-                        // Tool call - show tool name + input
-                        HStack(spacing: 4) {
-                            if let toolName = session.lastToolName {
-                                Text(MCPToolFormatter.formatToolName(toolName))
-                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                    .foregroundColor(.white.opacity(0.5))
-                            }
-                            if let input = session.lastMessage {
-                                Text(input)
-                                    .font(.system(size: 11))
-                                    .foregroundColor(.white.opacity(0.4))
-                                    .lineLimit(1)
-                            }
-                        }
-                    case "user":
-                        // User message - prefix with "You:"
-                        HStack(spacing: 4) {
+
+                    HStack(alignment: .center, spacing: 10) {
+                        HStack(spacing: 8) {
                             Text("You:")
                                 .font(.system(size: 11, weight: .medium))
-                                .foregroundColor(.white.opacity(0.5))
-                            if let msg = session.lastMessage {
-                                Text(msg)
-                                    .font(.system(size: 11))
-                                    .foregroundColor(.white.opacity(0.4))
-                                    .lineLimit(1)
-                            }
-                        }
-                    default:
-                        // Assistant message - just show text
-                        if let msg = session.lastMessage {
-                            Text(msg)
+                                .foregroundColor(.white.opacity(0.55))
+
+                            Text(userPromptPreview)
                                 .font(.system(size: 11))
-                                .foregroundColor(.white.opacity(0.4))
+                                .foregroundColor(.white.opacity(0.72))
                                 .lineLimit(1)
                         }
+
+                        Spacer(minLength: 10)
                     }
-                } else if let lastMsg = session.lastMessage {
-                    Text(lastMsg)
-                        .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.4))
-                        .lineLimit(1)
+
+                    ActionLine(display: latestActionDisplay)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            Spacer(minLength: 0)
-
-            // Action icons or approval buttons
-            if isWaitingForApproval && isInteractiveTool {
-                // Interactive tools like AskUserQuestion - show chat + terminal buttons
-                HStack(spacing: 8) {
-                    IconButton(icon: "bubble.left") {
-                        onChat()
-                    }
-
-                    // Go to Terminal button (only if yabai available)
-                    if isYabaiAvailable {
-                        TerminalButton(
-                            isEnabled: session.isInTmux,
-                            onTap: { onFocus() }
-                        )
-                    }
-                }
-                .transition(.opacity.combined(with: .scale(scale: 0.9)))
-            } else if isWaitingForApproval {
-                InlineApprovalButtons(
-                    onChat: onChat,
-                    onApprove: onApprove,
-                    onReject: onReject
+            if isExpanded, let interaction = activeInteraction {
+                SessionInteractionCard(
+                    interaction: interaction,
+                    accentColor: agentAccentColor,
+                    canSubmitDirectly: canSubmitInteractionDirectly,
+                    isSubmitting: isInteractionSubmitting,
+                    submitError: interactionSubmitError,
+                    onSubmitResponses: onSubmitInteractionResponses,
+                    onOpenHostApp: onOpenHostApp
                 )
-                .transition(.opacity.combined(with: .scale(scale: 0.9)))
-            } else {
-                HStack(spacing: 8) {
-                    // Chat icon - always show
-                    IconButton(icon: "bubble.left") {
-                        onChat()
-                    }
-
-                    // Focus icon (only for tmux instances with yabai)
-                    if session.isInTmux && isYabaiAvailable {
-                        IconButton(icon: "eye") {
-                            onFocus()
-                        }
-                    }
-
-                    // Archive button - only for idle or completed sessions
-                    if session.phase == .idle || session.phase == .waitingForInput {
-                        IconButton(icon: "archivebox") {
-                            onArchive()
-                        }
-                    }
-                }
-                .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                .padding(.leading, 58)
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.leading, 8)
         .padding(.trailing, 14)
         .padding(.vertical, 10)
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) {
+        .onTapGesture {
             onChat()
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isWaitingForApproval)
@@ -293,33 +502,335 @@ struct InstanceRow: View {
     }
 
     @ViewBuilder
-    private var stateIndicator: some View {
-        switch session.phase {
-        case .processing, .compacting:
-            Text(spinnerSymbols[spinnerPhase % spinnerSymbols.count])
-                .font(.system(size: 12, weight: .bold))
-                .foregroundColor(claudeOrange)
-                .onReceive(spinnerTimer) { _ in
-                    spinnerPhase = (spinnerPhase + 1) % spinnerSymbols.count
+    private var actionControls: some View {
+        if let interaction = activeInteraction, interaction.kind == .singleChoice {
+            HStack(spacing: 8) {
+                TextActionPill(
+                    label: isExpanded ? "Hide" : "Options\(session.pendingInteractionCount > 1 ? " (\(session.pendingInteractionCount))" : "")",
+                    action: onToggleExpanded
+                )
+
+                TextActionPill(label: "Share", action: onShare)
+            }
+            .transition(.opacity.combined(with: .scale(scale: 0.9)))
+        } else {
+            HStack(spacing: 8) {
+                TextActionPill(label: "Share", action: onShare)
+
+                if session.phase == .idle || session.phase == .waitingForInput {
+                    TextActionPill(label: "Archive", action: onArchive)
                 }
-        case .waitingForApproval:
-            Text(spinnerSymbols[spinnerPhase % spinnerSymbols.count])
-                .font(.system(size: 12, weight: .bold))
-                .foregroundColor(TerminalColors.amber)
-                .onReceive(spinnerTimer) { _ in
-                    spinnerPhase = (spinnerPhase + 1) % spinnerSymbols.count
+            }
+            .transition(.opacity.combined(with: .scale(scale: 0.9)))
+        }
+    }
+}
+
+private struct SessionInteractionCard: View {
+    let interaction: SessionInteractionRequest
+    let accentColor: Color
+    let canSubmitDirectly: Bool
+    let isSubmitting: Bool
+    let submitError: String?
+    let onSubmitResponses: ([InteractionResponse]) -> Void
+    let onOpenHostApp: () -> Void
+
+    @State private var selections: [String: InteractionOption] = [:]
+    @State private var currentQuestionIndex = 0
+
+    private var currentQuestion: InteractionQuestion? {
+        guard !interaction.questions.isEmpty else { return nil }
+        return interaction.questions[min(currentQuestionIndex, interaction.questions.count - 1)]
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Text("Choose an option")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(accentColor.opacity(0.95))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(
+                        Capsule()
+                            .fill(accentColor.opacity(0.16))
+                    )
+
+                Text(canSubmitDirectly ? "Sent directly to the session" : "Opens the host app if direct submit is unavailable")
+                    .font(.system(size: 10))
+                    .foregroundColor(.white.opacity(0.42))
+                    .lineLimit(1)
+
+                if interaction.isMultiQuestion {
+                    Spacer(minLength: 0)
+
+                    Text("\(min(currentQuestionIndex + 1, interaction.questions.count))/\(interaction.questions.count)")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.45))
                 }
-        case .waitingForInput:
-            Circle()
-                .fill(TerminalColors.green)
-                .frame(width: 6, height: 6)
-        case .idle, .ended:
-            Circle()
-                .fill(Color.white.opacity(0.2))
-                .frame(width: 6, height: 6)
+            }
+
+            if let submitError {
+                Text(submitError)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.red.opacity(0.88))
+            }
+
+            if let question = currentQuestion {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(question.question)
+                        .font(.system(size: 12))
+                        .foregroundColor(.white.opacity(0.88))
+
+                    HStack(spacing: 8) {
+                        ForEach(question.options) { option in
+                            Button {
+                                handleSelection(option, for: question)
+                            } label: {
+                                Text(option.label)
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundColor(foregroundColor(for: option.role))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 10)
+                                            .fill(backgroundColor(for: option.role, isSelected: selections[question.id]?.id == option.id))
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 10)
+                                            .strokeBorder(borderColor(for: option.role, isSelected: selections[question.id]?.id == option.id), lineWidth: 0.8)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isSubmitting)
+                        }
+                    }
+                }
+            }
+
+            if interaction.isMultiQuestion {
+                HStack(spacing: 8) {
+                    if currentQuestionIndex > 0 {
+                        Button {
+                            currentQuestionIndex -= 1
+                        } label: {
+                            Text("Back")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(.white.opacity(0.84))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .fill(Color.white.opacity(0.08))
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isSubmitting)
+                    }
+
+                    if let question = currentQuestion, selections[question.id] != nil {
+                        Button {
+                            if currentQuestionIndex == interaction.questions.count - 1 {
+                                submitAllResponses()
+                            } else {
+                                currentQuestionIndex += 1
+                            }
+                        } label: {
+                            Text(currentQuestionIndex == interaction.questions.count - 1 ? "Submit answers" : "Next question")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(.black.opacity(0.9))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .fill(Color.white.opacity(0.9))
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isSubmitting)
+                    }
+                }
+            }
+
+            if submitError != nil {
+                Button {
+                    onOpenHostApp()
+                } label: {
+                    Text("Open host app")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white.opacity(0.7))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(Color.white.opacity(0.08))
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.white.opacity(0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.8)
+        )
+        .onChange(of: interaction.id) { _, _ in
+            resetInteractionState()
         }
     }
 
+    private func backgroundColor(for role: InteractionOptionRole, isSelected: Bool = false) -> Color {
+        if isSelected {
+            return accentColor.opacity(0.82)
+        }
+        switch role {
+        case .primary:
+            return Color.white.opacity(0.88)
+        case .destructive:
+            return Color(red: 0.76, green: 0.24, blue: 0.22)
+        case .secondary:
+            return Color.white.opacity(0.12)
+        }
+    }
+
+    private func foregroundColor(for role: InteractionOptionRole) -> Color {
+        switch role {
+        case .primary:
+            return .black.opacity(0.9)
+        case .destructive:
+            return .white.opacity(0.96)
+        case .secondary:
+            return .white.opacity(0.82)
+        }
+    }
+
+    private func borderColor(for role: InteractionOptionRole, isSelected: Bool = false) -> Color {
+        if isSelected {
+            return Color.white.opacity(0.24)
+        }
+        switch role {
+        case .primary:
+            return Color.white.opacity(0.16)
+        case .destructive:
+            return Color.white.opacity(0.08)
+        case .secondary:
+            return Color.white.opacity(0.14)
+        }
+    }
+
+    private func handleSelection(_ option: InteractionOption, for question: InteractionQuestion) {
+        if interaction.isMultiQuestion {
+            selections[question.id] = option
+        } else {
+            onSubmitResponses([InteractionResponse(questionId: question.id, option: option)])
+        }
+    }
+
+    private func submitAllResponses() {
+        onSubmitResponses(interaction.questions.compactMap { question in
+            guard let option = selections[question.id] else { return nil }
+            return InteractionResponse(questionId: question.id, option: option)
+        })
+    }
+
+    private func resetInteractionState() {
+        selections = [:]
+        currentQuestionIndex = 0
+    }
+}
+
+private enum ActionTextDisplay {
+    case plain(String)
+    case highlighted(label: String, detail: String, color: Color)
+}
+
+private struct ActionLine: View {
+    let display: ActionTextDisplay
+
+    var body: some View {
+        switch display {
+        case .plain(let text):
+            Text(text)
+                .font(.system(size: 11))
+                .foregroundColor(.white.opacity(0.55))
+                .lineLimit(1)
+        case .highlighted(let label, let detail, let color):
+            HStack(spacing: 6) {
+                Text(label)
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundColor(color)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(
+                        Capsule()
+                            .fill(color.opacity(0.14))
+                    )
+
+                Text(detail)
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.55))
+                    .lineLimit(1)
+            }
+        }
+    }
+}
+
+struct TextActionPill: View {
+    let label: String
+    let isEnabled: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    init(label: String, isEnabled: Bool = true, action: @escaping () -> Void) {
+        self.label = label
+        self.isEnabled = isEnabled
+        self.action = action
+    }
+
+    var body: some View {
+        Button {
+            if isEnabled {
+                action()
+            }
+        } label: {
+            Text(label)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(foregroundColor)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background(
+                    Capsule()
+                        .fill(backgroundColor)
+                )
+                .overlay(
+                    Capsule()
+                        .strokeBorder(borderColor, lineWidth: 0.8)
+                )
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+    }
+
+    private var foregroundColor: Color {
+        guard isEnabled else { return .white.opacity(0.3) }
+        return isHovered ? .white.opacity(0.92) : .white.opacity(0.68)
+    }
+
+    private var backgroundColor: Color {
+        guard isEnabled else { return Color.white.opacity(0.03) }
+        return isHovered ? Color.white.opacity(0.14) : Color.white.opacity(0.08)
+    }
+
+    private var borderColor: Color {
+        guard isEnabled else { return Color.white.opacity(0.06) }
+        return isHovered ? Color.white.opacity(0.22) : Color.white.opacity(0.12)
+    }
 }
 
 // MARK: - Inline Approval Buttons
@@ -336,25 +847,15 @@ struct InlineApprovalButtons: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            // Chat button
-            IconButton(icon: "bubble.left") {
+            TextActionPill(label: "Chat") {
                 onChat()
             }
             .opacity(showChatButton ? 1 : 0)
             .scaleEffect(showChatButton ? 1 : 0.8)
 
-            Button {
+            TextActionPill(label: "Deny") {
                 onReject()
-            } label: {
-                Text("Deny")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.white.opacity(0.6))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(Color.white.opacity(0.1))
-                    .clipShape(Capsule())
             }
-            .buttonStyle(.plain)
             .opacity(showDenyButton ? 1 : 0)
             .scaleEffect(showDenyButton ? 1 : 0.8)
 
@@ -384,87 +885,5 @@ struct InlineApprovalButtons: View {
                 showAllowButton = true
             }
         }
-    }
-}
-
-// MARK: - Icon Button
-
-struct IconButton: View {
-    let icon: String
-    let action: () -> Void
-
-    @State private var isHovered = false
-
-    var body: some View {
-        Button {
-            action()
-        } label: {
-            Image(systemName: icon)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(isHovered ? .white.opacity(0.8) : .white.opacity(0.4))
-                .frame(width: 24, height: 24)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(isHovered ? Color.white.opacity(0.1) : Color.clear)
-                )
-        }
-        .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
-    }
-}
-
-// MARK: - Compact Terminal Button (inline in description)
-
-struct CompactTerminalButton: View {
-    let isEnabled: Bool
-    let onTap: () -> Void
-
-    var body: some View {
-        Button {
-            if isEnabled {
-                onTap()
-            }
-        } label: {
-            HStack(spacing: 2) {
-                Image(systemName: "terminal")
-                    .font(.system(size: 8, weight: .medium))
-                Text("Go to Terminal")
-                    .font(.system(size: 10, weight: .medium))
-            }
-            .foregroundColor(isEnabled ? .white.opacity(0.9) : .white.opacity(0.3))
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(isEnabled ? Color.white.opacity(0.15) : Color.white.opacity(0.05))
-            .clipShape(Capsule())
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-// MARK: - Terminal Button
-
-struct TerminalButton: View {
-    let isEnabled: Bool
-    let onTap: () -> Void
-
-    var body: some View {
-        Button {
-            if isEnabled {
-                onTap()
-            }
-        } label: {
-            HStack(spacing: 3) {
-                Image(systemName: "terminal")
-                    .font(.system(size: 9, weight: .medium))
-                Text("Terminal")
-                    .font(.system(size: 11, weight: .medium))
-            }
-            .foregroundColor(isEnabled ? .black : .white.opacity(0.4))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(isEnabled ? Color.white.opacity(0.95) : Color.white.opacity(0.1))
-            .clipShape(Capsule())
-        }
-        .buttonStyle(.plain)
     }
 }

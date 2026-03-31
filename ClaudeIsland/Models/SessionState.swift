@@ -8,7 +8,7 @@
 
 import Foundation
 
-/// Complete state for a single Claude session
+/// Complete state for a single AI agent session
 /// This is the single source of truth - all state reads and writes go through SessionStore
 struct SessionState: Equatable, Identifiable, Sendable {
     // MARK: - Identity
@@ -16,6 +16,7 @@ struct SessionState: Equatable, Identifiable, Sendable {
     let sessionId: String
     let cwd: String
     let projectName: String
+    let agentId: String  // Which AI agent this session belongs to (e.g., "claude", "codex", "gemini")
 
     // MARK: - Instance Metadata
 
@@ -47,6 +48,13 @@ struct SessionState: Equatable, Identifiable, Sendable {
 
     var conversationInfo: ConversationInfo
 
+    // MARK: - Interaction State
+
+    /// The latest unresolved structured interaction for this session.
+    var normalizedInteraction: SessionInteractionRequest?
+    var activeInteraction: SessionInteractionRequest?
+    var pendingInteractionCount: Int
+
     // MARK: - Clear Reconciliation
 
     /// When true, the next file update should reconcile chatItems with parser state
@@ -68,6 +76,7 @@ struct SessionState: Equatable, Identifiable, Sendable {
         sessionId: String,
         cwd: String,
         projectName: String? = nil,
+        agentId: String = "claude",
         pid: Int? = nil,
         tty: String? = nil,
         isInTmux: Bool = false,
@@ -77,8 +86,11 @@ struct SessionState: Equatable, Identifiable, Sendable {
         subagentState: SubagentState = SubagentState(),
         conversationInfo: ConversationInfo = ConversationInfo(
             summary: nil, lastMessage: nil, lastMessageRole: nil,
-            lastToolName: nil, firstUserMessage: nil, lastUserMessageDate: nil
+            lastToolName: nil, firstUserMessage: nil, lastUserMessage: nil, lastUserMessageDate: nil
         ),
+        normalizedInteraction: SessionInteractionRequest? = nil,
+        activeInteraction: SessionInteractionRequest? = nil,
+        pendingInteractionCount: Int = 0,
         needsClearReconciliation: Bool = false,
         lastActivity: Date = Date(),
         createdAt: Date = Date()
@@ -86,6 +98,7 @@ struct SessionState: Equatable, Identifiable, Sendable {
         self.sessionId = sessionId
         self.cwd = cwd
         self.projectName = projectName ?? URL(fileURLWithPath: cwd).lastPathComponent
+        self.agentId = agentId
         self.pid = pid
         self.tty = tty
         self.isInTmux = isInTmux
@@ -94,6 +107,9 @@ struct SessionState: Equatable, Identifiable, Sendable {
         self.toolTracker = toolTracker
         self.subagentState = subagentState
         self.conversationInfo = conversationInfo
+        self.normalizedInteraction = normalizedInteraction
+        self.activeInteraction = activeInteraction
+        self.pendingInteractionCount = pendingInteractionCount
         self.needsClearReconciliation = needsClearReconciliation
         self.lastActivity = lastActivity
         self.createdAt = createdAt
@@ -103,7 +119,7 @@ struct SessionState: Equatable, Identifiable, Sendable {
 
     /// Whether this session needs user attention
     var needsAttention: Bool {
-        phase.needsAttention
+        phase.needsAttention || activeInteraction != nil
     }
 
     /// The active permission context, if any
@@ -174,6 +190,11 @@ struct SessionState: Equatable, Identifiable, Sendable {
         conversationInfo.firstUserMessage
     }
 
+    /// Last user message
+    var lastUserMessage: String? {
+        conversationInfo.lastUserMessage
+    }
+
     /// Last user message date
     var lastUserMessageDate: Date? {
         conversationInfo.lastUserMessageDate
@@ -181,7 +202,7 @@ struct SessionState: Equatable, Identifiable, Sendable {
 
     /// Whether the session can be interacted with
     var canInteract: Bool {
-        phase.needsAttention
+        phase.needsAttention || activeInteraction != nil
     }
 }
 

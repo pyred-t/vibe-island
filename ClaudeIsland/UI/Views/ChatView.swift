@@ -46,9 +46,21 @@ struct ChatView: View {
         session.phase.isWaitingForApproval
     }
 
-    /// Extract the tool name if waiting for approval
-    private var approvalTool: String? {
-        session.phase.approvalToolName
+    private var activeInteraction: SessionInteractionRequest? {
+        if let interaction = session.activeInteraction {
+            return interaction
+        }
+
+        guard let permission = session.activePermission else {
+            return nil
+        }
+
+        return SessionInteractionRequest.from(
+            permission: permission,
+            sessionId: session.sessionId,
+            agentId: session.agentId,
+            submitMode: SessionInteractionRequest.submitMode(isInTmux: session.isInTmux, tty: session.tty)
+        )
     }
 
     
@@ -68,21 +80,12 @@ struct ChatView: View {
                 }
 
                 // Approval bar, interactive prompt, or Input bar
-                if let tool = approvalTool {
-                    if tool == "AskUserQuestion" {
-                        // Interactive tools - show prompt to answer in terminal
-                        interactivePromptBar
-                            .transition(.asymmetric(
-                                insertion: .opacity.combined(with: .move(edge: .bottom)),
-                                removal: .opacity
-                            ))
-                    } else {
-                        approvalBar(tool: tool)
-                            .transition(.asymmetric(
-                                insertion: .opacity.combined(with: .move(edge: .bottom)),
-                                removal: .opacity
-                            ))
-                    }
+                if let interaction = activeInteraction {
+                    interactionPromptBar(interaction)
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .move(edge: .bottom)),
+                            removal: .opacity
+                        ))
                 } else {
                     inputBar
                         .transition(.opacity)
@@ -97,14 +100,19 @@ struct ChatView: View {
             hasLoadedOnce = true
 
             // Check if already loaded (from previous visit)
-            if ChatHistoryManager.shared.isLoaded(sessionId: sessionId) {
-                history = ChatHistoryManager.shared.history(for: sessionId)
+            let cachedHistory = ChatHistoryManager.shared.history(for: sessionId)
+            if ChatHistoryManager.shared.isLoaded(sessionId: sessionId), !cachedHistory.isEmpty {
+                history = cachedHistory
                 isLoading = false
                 return
             }
 
             // Load in background, show loading state
-            await ChatHistoryManager.shared.loadFromFile(sessionId: sessionId, cwd: session.cwd)
+            await ChatHistoryManager.shared.loadFromFile(
+                sessionId: sessionId,
+                cwd: session.cwd,
+                forceReload: cachedHistory.isEmpty
+            )
             history = ChatHistoryManager.shared.history(for: sessionId)
 
             withAnimation(.easeOut(duration: 0.2)) {
@@ -427,6 +435,22 @@ struct ChatView: View {
         )
     }
 
+    private func interactionPromptBar(_ interaction: SessionInteractionRequest) -> some View {
+        ChatInteractionPromptBar(
+            interaction: interaction,
+            isSubmitting: sessionMonitor.submittingInteractionSessionIds.contains(sessionId),
+            submitError: sessionMonitor.interactionSubmitErrors[sessionId],
+            onOpenHostApp: {
+                Task {
+                    _ = await sessionMonitor.focusSession(sessionId: sessionId)
+                }
+            },
+            onSubmitResponses: { responses in
+                submitInteractionResponses(responses)
+            }
+        )
+    }
+
     // MARK: - Autoscroll Management
 
     /// Pause autoscroll (user scrolled away from bottom)
@@ -460,6 +484,17 @@ struct ChatView: View {
 
     private func denyPermission() {
         sessionMonitor.denyPermission(sessionId: sessionId, reason: nil)
+    }
+
+    private func submitInteractionOption(_ option: InteractionOption) {
+        let questionId = session.activeInteraction?.questions.first?.id ?? "question-0"
+        submitInteractionResponses([InteractionResponse(questionId: questionId, option: option)])
+    }
+
+    private func submitInteractionResponses(_ responses: [InteractionResponse]) {
+        Task {
+            _ = await sessionMonitor.submitInteraction(sessionId: sessionId, responses: responses)
+        }
     }
 
     private func sendMessage() {
@@ -1040,6 +1075,198 @@ struct ChatInteractivePromptBar: View {
                 showButton = true
             }
         }
+    }
+}
+
+struct ChatInteractionPromptBar: View {
+    let interaction: SessionInteractionRequest
+    let isSubmitting: Bool
+    let submitError: String?
+    let onOpenHostApp: () -> Void
+    let onSubmitResponses: ([InteractionResponse]) -> Void
+
+    @State private var selections: [String: InteractionOption] = [:]
+    @State private var currentQuestionIndex = 0
+
+    private var currentQuestion: InteractionQuestion? {
+        guard !interaction.questions.isEmpty else { return nil }
+        return interaction.questions[min(currentQuestionIndex, interaction.questions.count - 1)]
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Text(interaction.title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(TerminalColors.amber)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        Capsule()
+                            .fill(TerminalColors.amber.opacity(0.14))
+                    )
+
+                Text(interaction.submitMode == .focusOnly ? "Open host app if direct submit is unavailable" : "Reply directly from island")
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.5))
+                    .lineLimit(1)
+
+                if interaction.isMultiQuestion {
+                    Spacer(minLength: 0)
+
+                    Text("\(min(currentQuestionIndex + 1, interaction.questions.count))/\(interaction.questions.count)")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.45))
+                }
+            }
+
+            if let submitError {
+                Text(submitError)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.red.opacity(0.88))
+            }
+
+            if let question = currentQuestion {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(question.question)
+                        .font(.system(size: 12))
+                        .foregroundColor(.white.opacity(0.86))
+
+                    HStack(spacing: 8) {
+                        ForEach(question.options) { option in
+                            Button {
+                                handleSelection(option, for: question)
+                            } label: {
+                                Text(option.label)
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundColor(foregroundColor(for: option.role))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 10)
+                                            .fill(backgroundColor(for: option.role, isSelected: selections[question.id]?.id == option.id))
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isSubmitting)
+                        }
+                    }
+                }
+            }
+
+            if interaction.isMultiQuestion {
+                HStack(spacing: 8) {
+                    if currentQuestionIndex > 0 {
+                        Button {
+                            currentQuestionIndex -= 1
+                        } label: {
+                            Text("Back")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(.white.opacity(0.84))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .fill(Color.white.opacity(0.08))
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isSubmitting)
+                    }
+
+                    if let question = currentQuestion, selections[question.id] != nil {
+                        Button {
+                            if currentQuestionIndex == interaction.questions.count - 1 {
+                                submitAllResponses()
+                            } else {
+                                currentQuestionIndex += 1
+                            }
+                        } label: {
+                            Text(currentQuestionIndex == interaction.questions.count - 1 ? "Submit answers" : "Next question")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(.black.opacity(0.9))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .fill(Color.white.opacity(0.9))
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isSubmitting)
+                    }
+                }
+            }
+
+            if submitError != nil {
+                Button {
+                    onOpenHostApp()
+                } label: {
+                    Text("Open host app")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white.opacity(0.72))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(Color.white.opacity(0.08))
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .frame(minHeight: 64)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(Color.black.opacity(0.2))
+        .onChange(of: interaction.id) { _, _ in
+            resetInteractionState()
+        }
+    }
+
+    private func backgroundColor(for role: InteractionOptionRole, isSelected: Bool = false) -> Color {
+        if isSelected {
+            return TerminalColors.amber.opacity(0.82)
+        }
+        switch role {
+        case .primary:
+            return Color.white.opacity(0.9)
+        case .destructive:
+            return Color(red: 0.78, green: 0.24, blue: 0.22)
+        case .secondary:
+            return Color.white.opacity(0.12)
+        }
+    }
+
+    private func foregroundColor(for role: InteractionOptionRole) -> Color {
+        switch role {
+        case .primary:
+            return .black.opacity(0.9)
+        case .destructive:
+            return .white.opacity(0.95)
+        case .secondary:
+            return .white.opacity(0.84)
+        }
+    }
+
+    private func handleSelection(_ option: InteractionOption, for question: InteractionQuestion) {
+        if interaction.isMultiQuestion {
+            selections[question.id] = option
+        } else {
+            onSubmitResponses([InteractionResponse(questionId: question.id, option: option)])
+        }
+    }
+
+    private func submitAllResponses() {
+        onSubmitResponses(interaction.questions.compactMap { question in
+            guard let option = selections[question.id] else { return nil }
+            return InteractionResponse(questionId: question.id, option: option)
+        })
+    }
+
+    private func resetInteractionState() {
+        selections = [:]
+        currentQuestionIndex = 0
     }
 }
 

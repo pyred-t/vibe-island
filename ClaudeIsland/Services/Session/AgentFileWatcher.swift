@@ -13,6 +13,7 @@ import os.log
 private let logger = Logger(subsystem: "com.claudeisland", category: "AgentFileWatcher")
 
 /// Protocol for receiving agent file update notifications
+@MainActor
 protocol AgentFileWatcherDelegate: AnyObject {
     func didUpdateAgentTools(sessionId: String, taskToolId: String, tools: [SubagentToolInfo])
 }
