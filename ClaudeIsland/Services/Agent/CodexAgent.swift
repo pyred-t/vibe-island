@@ -310,6 +310,7 @@ struct CodexAgent: AIAgent {
             if type == "event_msg",
                payload["type"] as? String == "agent_message",
                let message = payload["message"] as? String,
+               message.count < 400,
                let interaction = SessionInteractionRequest.fromHeuristicText(
                     sessionId: sessionId,
                     interactionId: "codex-agent-message-\(index)",
@@ -326,6 +327,7 @@ struct CodexAgent: AIAgent {
                let role = payload["role"] as? String,
                role == "assistant",
                let messageText = extractMessageText(from: payload["content"]),
+               messageText.count < 400,
                let interaction = SessionInteractionRequest.fromHeuristicText(
                     sessionId: sessionId,
                     interactionId: "codex-message-\(index)",
@@ -379,10 +381,17 @@ struct CodexAgent: AIAgent {
 
     // MARK: - Process-Based Session Detection
 
+    /// Whether a detected Codex process is the CLI binary or the App bundle.
+    enum CodexVariant: String, Sendable {
+        case cli      // ~/.codex/bin/codex or homebrew install
+        case app      // /Applications/Codex.app bundle
+        case unknown
+    }
+
     /// Detect running Codex sessions via process tree analysis
-    /// Returns array of (pid, cwd, sessionId) tuples
-    func detectRunningSessions() -> [(pid: Int, cwd: String, sessionId: String)] {
-        var results: [(pid: Int, cwd: String, sessionId: String)] = []
+    /// Returns array of (pid, cwd, sessionId, variant) tuples
+    func detectRunningSessions() -> [(pid: Int, cwd: String, sessionId: String, variant: CodexVariant)] {
+        var results: [(pid: Int, cwd: String, sessionId: String, variant: CodexVariant)] = []
 
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/ps")
@@ -413,10 +422,12 @@ struct CodexAgent: AIAgent {
                     if let pid = Int(components[0]) {
                         let cwd = ProcessTreeBuilder.shared.getWorkingDirectory(forPid: pid) ?? ""
                         let sessionId = resolveCurrentConversation(cwd: cwd)?.sessionId ?? "codex-pid-\(pid)"
+                        let variant = Self.detectCodexVariant(pid: pid, command: comm)
                         results.append((
                             pid: pid,
                             cwd: cwd,
-                            sessionId: sessionId
+                            sessionId: sessionId,
+                            variant: variant
                         ))
                     }
                 }
@@ -427,7 +438,22 @@ struct CodexAgent: AIAgent {
 
         return results
     }
+
+    /// Determine whether a Codex process is the CLI binary or the desktop App.
+    private static func detectCodexVariant(pid: Int, command: String) -> CodexVariant {
+        if let path = ProcessTreeBuilder.shared.getExecutablePath(forPid: pid) {
+            if path.contains(".app/Contents/MacOS") {
+                return .app
+            }
+            if path.contains("/.codex/") || path.contains("/bin/codex") {
+                return .cli
+            }
+        }
+        // Heuristic: capitalized "Codex" is typically the App
+        return command.first?.isUppercase == true ? .app : .unknown
+    }
 }
+
 
 struct ResolvedCodexConversation: Sendable {
     let sessionId: String

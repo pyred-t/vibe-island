@@ -686,25 +686,35 @@ private struct InteractionPopView: View {
 
                         HStack(spacing: 10) {
                             ForEach(question.options) { option in
-                                Button {
-                                    handleSelection(option, for: question)
-                                } label: {
-                                    Text(option.label)
-                                        .font(.system(size: 12, weight: .bold))
-                                        .foregroundColor(foregroundColor(for: option.role))
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 11)
-                                        .background(
-                                            RoundedRectangle(cornerRadius: 12)
-                                                .fill(backgroundColor(for: option.role, isSelected: selections[question.id]?.id == option.id))
-                                        )
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 12)
-                                                .strokeBorder(borderColor(for: option.role, isSelected: selections[question.id]?.id == option.id), lineWidth: 0.8)
-                                        )
+                                if option.role == .bypass {
+                                    BypassOptionButton(
+                                        option: option,
+                                        onConfirm: { handleSelection(option, for: question) },
+                                        fontSize: 12,
+                                        verticalPadding: 11,
+                                        cornerRadius: 12
+                                    )
+                                } else {
+                                    Button {
+                                        handleSelection(option, for: question)
+                                    } label: {
+                                        Text(option.label)
+                                            .font(.system(size: 12, weight: .bold))
+                                            .foregroundColor(foregroundColor(for: option.role))
+                                            .frame(maxWidth: .infinity)
+                                            .padding(.vertical, 11)
+                                            .background(
+                                                RoundedRectangle(cornerRadius: 12)
+                                                    .fill(backgroundColor(for: option.role, isSelected: selections[question.id]?.id == option.id))
+                                            )
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 12)
+                                                    .strokeBorder(borderColor(for: option.role, isSelected: selections[question.id]?.id == option.id), lineWidth: 0.8)
+                                            )
+                                    }
+                                    .buttonStyle(.plain)
+                                    .disabled(isSubmitting)
                                 }
-                                .buttonStyle(.plain)
-                                .disabled(isSubmitting)
                             }
                         }
                     }
@@ -804,6 +814,8 @@ private struct InteractionPopView: View {
             return Color(red: 0.76, green: 0.24, blue: 0.22)
         case .secondary:
             return Color.white.opacity(0.12)
+        case .bypass:
+            return TerminalColors.amber.opacity(0.12)
         }
     }
 
@@ -815,6 +827,8 @@ private struct InteractionPopView: View {
             return .white.opacity(0.96)
         case .secondary:
             return .white.opacity(0.82)
+        case .bypass:
+            return TerminalColors.amber
         }
     }
 
@@ -829,6 +843,8 @@ private struct InteractionPopView: View {
             return Color.white.opacity(0.08)
         case .secondary:
             return Color.white.opacity(0.14)
+        case .bypass:
+            return TerminalColors.amber.opacity(0.3)
         }
     }
 

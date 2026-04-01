@@ -150,6 +150,46 @@ def requires_permission(tool_name, tool_input, payload):
     return False
 
 
+def _extract_message(payload, event_name, tool_input):
+    """Extract the best available message text from a Codex hook payload.
+
+    Digs into nested tool_input structures to find permission/justification
+    text that the top-level payload doesn't expose.
+    """
+    # Primary: explicit prompt/message fields
+    msg = dig(payload, "prompt", "last_assistant_message", "lastAssistantMessage")
+
+    # Secondary: dig into tool_input for permission-related text
+    parts = []
+    if isinstance(tool_input, dict):
+        for key in ("justification", "permission_request_text", "permission_text",
+                     "request_text", "prompt_text", "description", "reason"):
+            val = tool_input.get(key)
+            if val and isinstance(val, str):
+                parts.append(val)
+
+        # Codex CLI sometimes nests the command/code being approved
+        if not parts:
+            for key in ("command", "code", "script"):
+                val = tool_input.get(key)
+                if val and isinstance(val, str):
+                    parts.append(val)
+                    break  # only take one command-like field
+
+    if parts:
+        fallback = "\n".join(parts)
+        msg = f"{msg}\n{fallback}" if msg else fallback
+
+    # For PreToolUse waiting_for_approval with no message, synthesize one
+    if not msg and event_name == "PreToolUse":
+        status = dig(payload, "status")
+        tool_name = dig(payload, "tool_name", "toolName", "name")
+        if status == "waiting_for_approval" and tool_name:
+            msg = f"Approve {tool_name}?"
+
+    return msg
+
+
 def build_state(payload):
     event_name = dig(payload, "hook_event_name", "hookEventName", "event_name", "event")
     if not event_name:
@@ -162,7 +202,7 @@ def build_state(payload):
 
     tool_input = normalize_tool_input(dig(payload, "tool_input", "toolInput"))
     tool_name = dig(payload, "tool_name", "toolName", "name")
-    message = dig(payload, "prompt", "last_assistant_message", "lastAssistantMessage")
+    message = _extract_message(payload, event_name, tool_input)
 
     return {
         "session_id": session_id,
@@ -228,7 +268,7 @@ def main():
         sys.exit(0)
 
     decision = response.get("decision", "ask")
-    if decision == "allow":
+    if decision == "allow" or decision == "always_allow":
         emit_permission_response("allow")
     elif decision == "deny":
         emit_permission_response("deny", response.get("reason"))

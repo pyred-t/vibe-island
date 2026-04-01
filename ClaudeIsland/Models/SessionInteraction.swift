@@ -19,6 +19,7 @@ enum InteractionOptionRole: Equatable, Sendable {
     case primary
     case secondary
     case destructive
+    case bypass  // "Don't ask again" — requires double-check confirmation
 }
 
 enum InteractionSubmitMode: Equatable, Sendable {
@@ -170,7 +171,8 @@ extension SessionInteractionRequest {
             : "Allow \(permission.toolName) to run?"
         let options: [InteractionOption] = [
             InteractionOption(id: "deny", label: "Deny", submissionValue: "deny", detail: nil, role: .destructive),
-            InteractionOption(id: "allow", label: "Allow", submissionValue: "allow", detail: nil, role: .primary)
+            InteractionOption(id: "allow", label: "Allow", submissionValue: "allow", detail: nil, role: .primary),
+            InteractionOption(id: "always_allow", label: "Bypass", submissionValue: "always_allow", detail: "Don't ask again", role: .bypass)
         ]
 
         return SessionInteractionRequest(
@@ -359,6 +361,38 @@ extension SessionInteractionRequest {
         )
     }
 
+    /// Attempts accessibility-sourced text first (ground truth), then falls back to hook message.
+    /// Both paths apply the same structural validation in parseChoicePrompt().
+    static func fromAccessibilityEnrichedHook(
+        accessibilityText: String?,
+        hookMessage: String?,
+        sessionId: String,
+        interactionId: String,
+        sourceAgent: String,
+        timestamp: Date,
+        submitMode: InteractionSubmitMode
+    ) -> SessionInteractionRequest? {
+        // Prefer accessibility text — it's what the user actually sees
+        if let axText = accessibilityText {
+            if let result = fromHeuristicText(
+                sessionId: sessionId, interactionId: interactionId,
+                sourceAgent: sourceAgent, text: axText,
+                timestamp: timestamp, submitMode: submitMode
+            ) {
+                return result
+            }
+        }
+        // Fall back to hook message
+        if let hookMsg = hookMessage {
+            return fromHeuristicText(
+                sessionId: sessionId, interactionId: interactionId,
+                sourceAgent: sourceAgent, text: hookMsg,
+                timestamp: timestamp, submitMode: submitMode
+            )
+        }
+        return nil
+    }
+
     func programmaticUpdatedInput(for responses: [InteractionResponse]) -> [String: Any]? {
         switch programmaticStrategy {
         case .none:
@@ -438,6 +472,9 @@ extension SessionInteractionRequest {
     private static func parseChoicePrompt(
         from text: String
     ) -> [InteractionQuestion]? {
+        // Structural filter: real interactive prompts are concise
+        guard text.count < 600 else { return nil }
+
         let lines = text
             .components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -461,6 +498,25 @@ extension SessionInteractionRequest {
 
         guard optionLines.count >= 2, optionLines.count <= 6 else { return nil }
 
+        // Structural: option lines should be short labels, not paragraphs
+        let maxOptionLength = optionLines.map(\.label.count).max() ?? 0
+        guard maxOptionLength <= 100 else { return nil }
+
+        // Structural: options should make up a meaningful fraction of all lines
+        let optionDensity = Double(optionLines.count) / Double(lines.count)
+        guard optionDensity >= 0.3 else { return nil }
+
+        // Structural: non-option text shouldn't dominate (rejects explanatory paragraphs)
+        let optionLabelSet = Set(optionLines.map(\.label))
+        let nonOptionLines = lines.filter { line in
+            let stripped = line.replacingOccurrences(
+                of: #"^(\d+\.\s+|[-*•]\s+)"#, with: "", options: .regularExpression
+            )
+            return !optionLabelSet.contains(stripped)
+        }
+        let nonOptionTextLength = nonOptionLines.joined(separator: " ").count
+        guard nonOptionTextLength < 200 else { return nil }
+
         let questionLine = lines.first(where: { line in
             let lower = line.lowercased()
             return line.hasSuffix("?")
@@ -472,6 +528,23 @@ extension SessionInteractionRequest {
         }) ?? lines.first
 
         guard let question = questionLine, !question.isEmpty else { return nil }
+
+        // Structural: question should be concise
+        guard question.count < 200 else { return nil }
+
+        // Structural: question must be adjacent to the option block (within 3 lines)
+        if let questionIdx = lines.firstIndex(of: question) {
+            let optionIndices = lines.enumerated().compactMap { idx, line -> Int? in
+                let stripped = line.replacingOccurrences(
+                    of: #"^(\d+\.\s+|[-*•]\s+)"#, with: "", options: .regularExpression
+                )
+                return optionLabelSet.contains(stripped) ? idx : nil
+            }
+            if let firstOpt = optionIndices.min(), let lastOpt = optionIndices.max() {
+                let dist = min(abs(questionIdx - firstOpt), abs(questionIdx - lastOpt))
+                guard dist <= 3 else { return nil }
+            }
+        }
 
         let options = buildOptions(from: optionLines)
         guard !options.isEmpty else { return nil }

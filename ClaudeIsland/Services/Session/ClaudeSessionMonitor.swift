@@ -54,6 +54,12 @@ class ClaudeSessionMonitor: ObservableObject {
         }
     }
 
+    func bypassPermission(sessionId: String) {
+        Task {
+            _ = await submitPermissionDecision(sessionId: sessionId, decisionId: "always_allow")
+        }
+    }
+
     /// Archive (remove) a session from the instances list
     func archiveSession(sessionId: String) {
         Task {
@@ -105,7 +111,7 @@ class ClaudeSessionMonitor: ObservableObject {
                 )
 
                 switch decision {
-                case "allow":
+                case "allow", "always_allow":
                     await SessionStore.shared.process(
                         .permissionApproved(sessionId: sessionId, toolUseId: permission.toolUseId)
                     )
@@ -152,7 +158,7 @@ class ClaudeSessionMonitor: ObservableObject {
            interaction.toolUseId == permission.toolUseId,
            let decisionId = responses.first?.option.id {
             switch decisionId {
-            case "allow":
+            case "allow", "always_allow":
                 await SessionStore.shared.process(
                     .permissionApproved(sessionId: sessionId, toolUseId: permission.toolUseId)
                 )
@@ -206,6 +212,8 @@ class ClaudeSessionMonitor: ObservableObject {
             return "allow"
         case "deny":
             return "deny"
+        case "always_allow":
+            return "always_allow"
         default:
             return nil
         }
@@ -238,7 +246,7 @@ class ClaudeSessionMonitor: ObservableObject {
             )
 
             switch decision {
-            case "allow":
+            case "allow", "always_allow":
                 await SessionStore.shared.process(
                     .permissionApproved(sessionId: sessionId, toolUseId: permission.toolUseId)
                 )
@@ -261,7 +269,7 @@ class ClaudeSessionMonitor: ObservableObject {
 
         if result.succeeded {
             switch decisionId {
-            case "allow":
+            case "allow", "always_allow":
                 await SessionStore.shared.process(
                     .permissionApproved(sessionId: sessionId, toolUseId: permission.toolUseId)
                 )

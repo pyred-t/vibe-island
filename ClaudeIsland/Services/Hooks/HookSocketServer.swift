@@ -503,10 +503,10 @@ class HookSocketServer {
             } else if let cachedToolUseId = popCachedToolUseId(event: event) {
                 toolUseId = cachedToolUseId
             } else {
-                logger.warning("Permission request missing tool_use_id for \(event.sessionId.prefix(8), privacy: .public) - no cache hit")
-                close(clientSocket)
-                eventHandler?(event)
-                return
+                // Generate a synthetic tool_use_id so we can still track and respond
+                let synthetic = "\(event.sessionId)-\(event.tool ?? "unknown")-\(Int(Date().timeIntervalSince1970))"
+                logger.warning("Permission request missing tool_use_id for \(event.sessionId.prefix(8), privacy: .public) - using synthetic: \(synthetic.prefix(20), privacy: .public)")
+                toolUseId = synthetic
             }
 
             logger.debug("Permission request - keeping socket open for \(event.sessionId.prefix(8), privacy: .public) tool:\(toolUseId.prefix(12), privacy: .public)")

@@ -151,7 +151,11 @@ def main():
         state["status"] = "waiting_for_approval"
         state["tool"] = data.get("tool_name")
         state["tool_input"] = tool_input
-        # tool_use_id lookup handled by Swift-side cache from PreToolUse
+        # Extract tool_use_id directly from PermissionRequest payload
+        # (not all tools fire PreToolUse first, e.g. Fetch)
+        tool_use_id = data.get("tool_use_id")
+        if tool_use_id:
+            state["tool_use_id"] = tool_use_id
 
         # Send to app and wait for decision
         response = send_event(state)
@@ -166,6 +170,23 @@ def main():
                     "hookSpecificOutput": {
                         "hookEventName": "PermissionRequest",
                         "decision": {"behavior": "allow"},
+                    }
+                }
+                print(json.dumps(output))
+                sys.exit(0)
+
+            elif decision == "always_allow":
+                # Approve this request AND persist the permission rule
+                decision_obj = {"behavior": "allow"}
+                # Use permission_suggestions from the raw payload to add
+                # permanent allow rules (Claude Code provides these)
+                suggestions = data.get("permission_suggestions", [])
+                if suggestions:
+                    decision_obj["updatedPermissions"] = suggestions
+                output = {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PermissionRequest",
+                        "decision": decision_obj,
                     }
                 }
                 print(json.dumps(output))

@@ -142,4 +142,17 @@ struct ProcessTreeBuilder: Sendable {
 
         return nil
     }
+    /// Get the full executable path for a process via lsof
+    nonisolated func getExecutablePath(forPid pid: Int) -> String? {
+        guard let output = ProcessExecutor.shared.runSyncOrNil(
+            "/usr/sbin/lsof", arguments: ["-p", String(pid), "-Fn", "-d", "txt"]
+        ) else { return nil }
+
+        for line in output.components(separatedBy: "\n") {
+            if line.hasPrefix("n/"), !line.contains("dylib") {
+                return String(line.dropFirst())
+            }
+        }
+        return nil
+    }
 }

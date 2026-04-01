@@ -421,7 +421,8 @@ struct ChatView: View {
             tool: tool,
             toolInput: session.pendingToolInput,
             onApprove: { approvePermission() },
-            onDeny: { denyPermission() }
+            onDeny: { denyPermission() },
+            onBypass: { bypassPermission() }
         )
     }
 
@@ -484,6 +485,10 @@ struct ChatView: View {
 
     private func denyPermission() {
         sessionMonitor.denyPermission(sessionId: sessionId, reason: nil)
+    }
+
+    private func bypassPermission() {
+        sessionMonitor.bypassPermission(sessionId: sessionId)
     }
 
     private func submitInteractionOption(_ option: InteractionOption) {
@@ -1134,21 +1139,28 @@ struct ChatInteractionPromptBar: View {
 
                     HStack(spacing: 8) {
                         ForEach(question.options) { option in
-                            Button {
-                                handleSelection(option, for: question)
-                            } label: {
-                                Text(option.label)
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundColor(foregroundColor(for: option.role))
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 8)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 10)
-                                            .fill(backgroundColor(for: option.role, isSelected: selections[question.id]?.id == option.id))
-                                    )
+                            if option.role == .bypass {
+                                BypassOptionButton(
+                                    option: option,
+                                    onConfirm: { handleSelection(option, for: question) }
+                                )
+                            } else {
+                                Button {
+                                    handleSelection(option, for: question)
+                                } label: {
+                                    Text(option.label)
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundColor(foregroundColor(for: option.role))
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 8)
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 10)
+                                                .fill(backgroundColor(for: option.role, isSelected: selections[question.id]?.id == option.id))
+                                        )
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(isSubmitting)
                             }
-                            .buttonStyle(.plain)
-                            .disabled(isSubmitting)
                         }
                     }
                 }
@@ -1235,6 +1247,8 @@ struct ChatInteractionPromptBar: View {
             return Color(red: 0.78, green: 0.24, blue: 0.22)
         case .secondary:
             return Color.white.opacity(0.12)
+        case .bypass:
+            return TerminalColors.amber.opacity(0.12)
         }
     }
 
@@ -1246,6 +1260,8 @@ struct ChatInteractionPromptBar: View {
             return .white.opacity(0.95)
         case .secondary:
             return .white.opacity(0.84)
+        case .bypass:
+            return TerminalColors.amber
         }
     }
 
@@ -1270,77 +1286,167 @@ struct ChatInteractionPromptBar: View {
     }
 }
 
-// MARK: - Chat Approval Bar
-
 /// Approval bar for the chat view with animated buttons
 struct ChatApprovalBar: View {
     let tool: String
     let toolInput: String?
     let onApprove: () -> Void
     let onDeny: () -> Void
+    let onBypass: () -> Void
 
     @State private var showContent = false
     @State private var showAllowButton = false
     @State private var showDenyButton = false
+    @State private var showBypassButton = false
+    @State private var bypassConfirmMode = false
+    @State private var bypassConfirmed = false
 
     var body: some View {
         HStack(spacing: 12) {
-            // Tool info
-            VStack(alignment: .leading, spacing: 2) {
-                Text(MCPToolFormatter.formatToolName(tool))
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .foregroundColor(TerminalColors.amber)
-                if let input = toolInput {
-                    Text(input)
-                        .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.5))
-                        .lineLimit(1)
+            // Tool info (hidden when bypass confirm is active)
+            if !bypassConfirmMode {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(MCPToolFormatter.formatToolName(tool))
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundColor(TerminalColors.amber)
+                    if let input = toolInput {
+                        Text(input)
+                            .font(.system(size: 11))
+                            .foregroundColor(.white.opacity(0.5))
+                            .lineLimit(1)
+                    }
                 }
-            }
-            .opacity(showContent ? 1 : 0)
-            .offset(x: showContent ? 0 : -10)
+                .opacity(showContent ? 1 : 0)
+                .offset(x: showContent ? 0 : -10)
+                .transition(.asymmetric(
+                    insertion: .opacity.combined(with: .move(edge: .leading)),
+                    removal: .opacity.combined(with: .move(edge: .leading))
+                ))
 
-            Spacer()
-
-            // Deny button
-            Button {
-                onDeny()
-            } label: {
-                Text("Deny")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.white.opacity(0.7))
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(Color.white.opacity(0.1))
-                    .clipShape(Capsule())
+                Spacer()
             }
-            .buttonStyle(.plain)
-            .opacity(showDenyButton ? 1 : 0)
-            .scaleEffect(showDenyButton ? 1 : 0.8)
 
-            // Allow button
-            Button {
-                onApprove()
-            } label: {
-                Text("Allow")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.black)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(Color.white.opacity(0.95))
-                    .clipShape(Capsule())
+            if bypassConfirmMode {
+                // Bypass confirmation - full width
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                        bypassConfirmed = true
+                    }
+                    // Small delay to show the confirmed state before executing
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        onBypass()
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: bypassConfirmed ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                            .font(.system(size: 13, weight: .medium))
+                        Text(bypassConfirmed ? "Bypassing..." : "Confirm: don't ask again for this command")
+                            .font(.system(size: 13, weight: .medium))
+                    }
+                    .foregroundColor(bypassConfirmed ? .white : .black.opacity(0.9))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 9)
+                    .background(
+                        Capsule()
+                            .fill(bypassConfirmed
+                                ? TerminalColors.green.opacity(0.8)
+                                : TerminalColors.amber.opacity(0.95))
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(bypassConfirmed)
+                .transition(.asymmetric(
+                    insertion: .scale(scale: 0.85, anchor: .trailing).combined(with: .opacity),
+                    removal: .opacity
+                ))
+
+                // Cancel button to go back
+                if !bypassConfirmed {
+                    Button {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                            bypassConfirmMode = false
+                        }
+                    } label: {
+                        Text("Cancel")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(.white.opacity(0.6))
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(Color.white.opacity(0.1))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .transition(.scale(scale: 0.85).combined(with: .opacity))
+                }
+            } else {
+                // Bypass button
+                Button {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                        bypassConfirmMode = true
+                    }
+                } label: {
+                    Text("Bypass")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(TerminalColors.amber)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(TerminalColors.amber.opacity(0.15))
+                        .clipShape(Capsule())
+                        .overlay(
+                            Capsule()
+                                .strokeBorder(TerminalColors.amber.opacity(0.3), lineWidth: 0.8)
+                        )
+                }
+                .buttonStyle(.plain)
+                .opacity(showBypassButton ? 1 : 0)
+                .scaleEffect(showBypassButton ? 1 : 0.8)
+                .transition(.opacity.combined(with: .scale(scale: 0.8)))
+
+                // Deny button
+                Button {
+                    onDeny()
+                } label: {
+                    Text("Deny")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.white.opacity(0.7))
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(Color.white.opacity(0.1))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .opacity(showDenyButton ? 1 : 0)
+                .scaleEffect(showDenyButton ? 1 : 0.8)
+                .transition(.opacity.combined(with: .scale(scale: 0.8)))
+
+                // Allow button
+                Button {
+                    onApprove()
+                } label: {
+                    Text("Allow")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.black)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(Color.white.opacity(0.95))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .opacity(showAllowButton ? 1 : 0)
+                .scaleEffect(showAllowButton ? 1 : 0.8)
+                .transition(.opacity.combined(with: .scale(scale: 0.8)))
             }
-            .buttonStyle(.plain)
-            .opacity(showAllowButton ? 1 : 0)
-            .scaleEffect(showAllowButton ? 1 : 0.8)
         }
-        .frame(minHeight: 44)  // Consistent height with other bars
+        .frame(minHeight: 44)
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .background(Color.black.opacity(0.2))
         .onAppear {
             withAnimation(.spring(response: 0.3, dampingFraction: 0.7).delay(0.05)) {
                 showContent = true
+            }
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.7).delay(0.08)) {
+                showBypassButton = true
             }
             withAnimation(.spring(response: 0.35, dampingFraction: 0.7).delay(0.1)) {
                 showDenyButton = true

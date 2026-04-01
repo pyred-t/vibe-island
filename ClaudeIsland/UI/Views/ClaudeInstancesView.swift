@@ -89,6 +89,7 @@ struct AgentInstancesView: View {
                             onArchive: { archiveSession(session) },
                             onApprove: { approveSession(session) },
                             onReject: { rejectSession(session) },
+                            onBypass: { bypassSession(session) },
                             onToggleExpanded: { toggleExpanded(sessionId: session.sessionId) },
                             onOpenHostApp: {
                                 Task {
@@ -174,6 +175,10 @@ struct AgentInstancesView: View {
 
     private func rejectSession(_ session: SessionState) {
         sessionMonitor.denyPermission(sessionId: session.sessionId, reason: nil)
+    }
+
+    private func bypassSession(_ session: SessionState) {
+        sessionMonitor.bypassPermission(sessionId: session.sessionId)
     }
 
     private func archiveSession(_ session: SessionState) {
@@ -264,6 +269,7 @@ struct AgentInstanceRow: View {
     let onArchive: () -> Void
     let onApprove: () -> Void
     let onReject: () -> Void
+    let onBypass: () -> Void
     let onToggleExpanded: () -> Void
     let onOpenHostApp: () -> Void
     let onSubmitInteractionResponses: ([InteractionResponse]) -> Void
@@ -584,25 +590,32 @@ private struct SessionInteractionCard: View {
 
                     HStack(spacing: 8) {
                         ForEach(question.options) { option in
-                            Button {
-                                handleSelection(option, for: question)
-                            } label: {
-                                Text(option.label)
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundColor(foregroundColor(for: option.role))
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 8)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 10)
-                                            .fill(backgroundColor(for: option.role, isSelected: selections[question.id]?.id == option.id))
-                                    )
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 10)
-                                            .strokeBorder(borderColor(for: option.role, isSelected: selections[question.id]?.id == option.id), lineWidth: 0.8)
-                                    )
+                            if option.role == .bypass {
+                                BypassOptionButton(
+                                    option: option,
+                                    onConfirm: { handleSelection(option, for: question) }
+                                )
+                            } else {
+                                Button {
+                                    handleSelection(option, for: question)
+                                } label: {
+                                    Text(option.label)
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundColor(foregroundColor(for: option.role))
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 8)
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 10)
+                                                .fill(backgroundColor(for: option.role, isSelected: selections[question.id]?.id == option.id))
+                                        )
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 10)
+                                                .strokeBorder(borderColor(for: option.role, isSelected: selections[question.id]?.id == option.id), lineWidth: 0.8)
+                                        )
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(isSubmitting)
                             }
-                            .buttonStyle(.plain)
-                            .disabled(isSubmitting)
                         }
                     }
                 }
@@ -695,6 +708,8 @@ private struct SessionInteractionCard: View {
             return Color(red: 0.76, green: 0.24, blue: 0.22)
         case .secondary:
             return Color.white.opacity(0.12)
+        case .bypass:
+            return TerminalColors.amber.opacity(0.12)
         }
     }
 
@@ -706,6 +721,8 @@ private struct SessionInteractionCard: View {
             return .white.opacity(0.96)
         case .secondary:
             return .white.opacity(0.82)
+        case .bypass:
+            return TerminalColors.amber
         }
     }
 
@@ -720,6 +737,8 @@ private struct SessionInteractionCard: View {
             return Color.white.opacity(0.08)
         case .secondary:
             return Color.white.opacity(0.14)
+        case .bypass:
+            return TerminalColors.amber.opacity(0.3)
         }
     }
 
@@ -833,50 +852,131 @@ struct TextActionPill: View {
     }
 }
 
-// MARK: - Inline Approval Buttons
-
 /// Compact inline approval buttons with staggered animation
 struct InlineApprovalButtons: View {
     let onChat: () -> Void
     let onApprove: () -> Void
     let onReject: () -> Void
+    let onBypass: () -> Void
 
     @State private var showChatButton = false
+    @State private var showBypassButton = false
     @State private var showDenyButton = false
     @State private var showAllowButton = false
+    @State private var bypassConfirmMode = false
+    @State private var bypassConfirmed = false
 
     var body: some View {
         HStack(spacing: 6) {
-            TextActionPill(label: "Chat") {
-                onChat()
-            }
-            .opacity(showChatButton ? 1 : 0)
-            .scaleEffect(showChatButton ? 1 : 0.8)
+            if bypassConfirmMode {
+                // Bypass confirmation - expanded
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                        bypassConfirmed = true
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        onBypass()
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: bypassConfirmed ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                            .font(.system(size: 9, weight: .medium))
+                        Text(bypassConfirmed ? "Done" : "Confirm bypass")
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .foregroundColor(bypassConfirmed ? .white : .black.opacity(0.9))
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
+                    .background(
+                        Capsule()
+                            .fill(bypassConfirmed
+                                ? TerminalColors.green.opacity(0.8)
+                                : TerminalColors.amber.opacity(0.95))
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(bypassConfirmed)
+                .transition(.scale(scale: 0.85).combined(with: .opacity))
 
-            TextActionPill(label: "Deny") {
-                onReject()
-            }
-            .opacity(showDenyButton ? 1 : 0)
-            .scaleEffect(showDenyButton ? 1 : 0.8)
+                if !bypassConfirmed {
+                    Button {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                            bypassConfirmMode = false
+                        }
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundColor(.white.opacity(0.5))
+                            .padding(5)
+                            .background(Color.white.opacity(0.1))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .transition(.scale(scale: 0.8).combined(with: .opacity))
+                }
+            } else {
+                TextActionPill(label: "Chat") {
+                    onChat()
+                }
+                .opacity(showChatButton ? 1 : 0)
+                .scaleEffect(showChatButton ? 1 : 0.8)
+                .transition(.opacity.combined(with: .scale(scale: 0.8)))
 
-            Button {
-                onApprove()
-            } label: {
-                Text("Allow")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.black)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(Color.white.opacity(0.9))
-                    .clipShape(Capsule())
+                // Bypass pill
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                        bypassConfirmMode = true
+                    }
+                } label: {
+                    Text("Bypass")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(TerminalColors.amber)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 4)
+                        .background(
+                            Capsule()
+                                .fill(TerminalColors.amber.opacity(0.15))
+                        )
+                        .overlay(
+                            Capsule()
+                                .strokeBorder(TerminalColors.amber.opacity(0.3), lineWidth: 0.8)
+                        )
+                }
+                .buttonStyle(.plain)
+                .opacity(showBypassButton ? 1 : 0)
+                .scaleEffect(showBypassButton ? 1 : 0.8)
+                .transition(.opacity.combined(with: .scale(scale: 0.8)))
+
+                TextActionPill(label: "Deny") {
+                    onReject()
+                }
+                .opacity(showDenyButton ? 1 : 0)
+                .scaleEffect(showDenyButton ? 1 : 0.8)
+                .transition(.opacity.combined(with: .scale(scale: 0.8)))
+
+                Button {
+                    onApprove()
+                } label: {
+                    Text("Allow")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.black)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Color.white.opacity(0.9))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .opacity(showAllowButton ? 1 : 0)
+                .scaleEffect(showAllowButton ? 1 : 0.8)
+                .transition(.opacity.combined(with: .scale(scale: 0.8)))
             }
-            .buttonStyle(.plain)
-            .opacity(showAllowButton ? 1 : 0)
-            .scaleEffect(showAllowButton ? 1 : 0.8)
         }
         .onAppear {
             withAnimation(.spring(response: 0.3, dampingFraction: 0.7).delay(0.0)) {
                 showChatButton = true
+            }
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.7).delay(0.03)) {
+                showBypassButton = true
             }
             withAnimation(.spring(response: 0.3, dampingFraction: 0.7).delay(0.05)) {
                 showDenyButton = true
