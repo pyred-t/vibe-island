@@ -14,6 +14,7 @@ enum ToolResultData: Equatable, Sendable {
     case read(ReadResult)
     case edit(EditResult)
     case write(WriteResult)
+    case patch(PatchResult)
     case bash(BashResult)
     case grep(GrepResult)
     case glob(GlobResult)
@@ -87,6 +88,8 @@ struct WriteResult: Equatable, Sendable {
 // MARK: - Bash Tool Result
 
 struct BashResult: Equatable, Sendable {
+    let command: String?
+    let workingDirectory: String?
     let stdout: String
     let stderr: String
     let interrupted: Bool
@@ -106,6 +109,18 @@ struct BashResult: Equatable, Sendable {
             return stderr
         }
         return "(No content)"
+    }
+}
+
+// MARK: - Patch Tool Result
+
+struct PatchResult: Equatable, Sendable {
+    let summary: String?
+    let diff: String
+    let files: [String]
+
+    var primaryFile: String? {
+        files.first
     }
 }
 
@@ -190,9 +205,16 @@ struct SearchResultItem: Equatable, Sendable {
 struct AskUserQuestionResult: Equatable, Sendable {
     let questions: [QuestionItem]
     let answers: [String: String]
+
+    func answer(for question: QuestionItem, index: Int) -> String? {
+        answers[question.id]
+        ?? answers["\(index)"]
+        ?? answers[question.question]
+    }
 }
 
 struct QuestionItem: Equatable, Sendable {
+    let id: String
     let question: String
     let header: String?
     let options: [QuestionOption]
@@ -272,11 +294,26 @@ struct ToolStatusDisplay {
             return ToolStatusDisplay(text: "Editing...", isRunning: true)
         case "Write":
             return ToolStatusDisplay(text: "Writing...", isRunning: true)
+        case "Patch":
+            return ToolStatusDisplay(text: "Applying patch...", isRunning: true)
         case "Bash":
+            if let command = commandPreview(from: input) {
+                return ToolStatusDisplay(text: command, isRunning: true)
+            }
             if let desc = input["description"], !desc.isEmpty {
                 return ToolStatusDisplay(text: desc, isRunning: true)
             }
-            return ToolStatusDisplay(text: "Running...", isRunning: true)
+            return ToolStatusDisplay(text: "Running bash...", isRunning: true)
+        case "BashOutput":
+            if let command = firstNonEmpty(input["chars"], input["command"]) {
+                return ToolStatusDisplay(text: command, isRunning: true)
+            }
+            return ToolStatusDisplay(text: "Streaming output...", isRunning: true)
+        case "request_user_input", "AskUserQuestion":
+            if let question = firstNonEmpty(input["interaction_question"], input["question"]) {
+                return ToolStatusDisplay(text: question, isRunning: true)
+            }
+            return ToolStatusDisplay(text: "Waiting for your choice", isRunning: true)
         case "Grep", "Glob":
             if let pattern = input["pattern"] {
                 return ToolStatusDisplay(text: "Searching: \(pattern)", isRunning: true)
@@ -305,6 +342,34 @@ struct ToolStatusDisplay {
         }
     }
 
+    private static func firstNonEmpty(_ values: String?...) -> String? {
+        values.first { value in
+            guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+                return false
+            }
+            return !trimmed.isEmpty
+        } ?? nil
+    }
+
+    private static func commandPreview(from input: [String: String]) -> String? {
+        guard let command = firstNonEmpty(
+            input["command"],
+            input["cmd"],
+            input["command_line"],
+            input["bash_command"],
+            input["input"]
+        ) else {
+            return nil
+        }
+
+        let firstLine = command.components(separatedBy: .newlines).first ?? command
+        let trimmed = firstLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let preview = trimmed.count > 140 ? String(trimmed.prefix(140)) + "…" : trimmed
+        return preview
+    }
+
     /// Get completed status text for a tool result
     static func completed(for toolName: String, result: ToolResultData?) -> ToolStatusDisplay {
         guard let result = result else {
@@ -323,7 +388,19 @@ struct ToolStatusDisplay {
             let action = r.type == .create ? "Created" : "Wrote"
             return ToolStatusDisplay(text: "\(action) \(r.filename)", isRunning: false)
 
+        case .patch(let r):
+            if let primaryFile = r.primaryFile {
+                return ToolStatusDisplay(text: "Patched \(primaryFile)", isRunning: false)
+            }
+            return ToolStatusDisplay(text: "Patched files", isRunning: false)
+
         case .bash(let r):
+            if let command = commandPreview(from: [
+                "command": r.command ?? "",
+                "cwd": r.workingDirectory ?? ""
+            ]) {
+                return ToolStatusDisplay(text: command, isRunning: false)
+            }
             if let bgId = r.backgroundTaskId {
                 return ToolStatusDisplay(text: "Running in background (\(bgId))", isRunning: false)
             }

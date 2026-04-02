@@ -54,6 +54,8 @@ struct SessionState: Equatable, Identifiable, Sendable {
     var normalizedInteraction: SessionInteractionRequest?
     var activeInteraction: SessionInteractionRequest?
     var pendingInteractionCount: Int
+    var dismissedInteractionToolUseIds: Set<String>
+    var pendingSubmittedInteractionToolUseIds: Set<String>
 
     // MARK: - Clear Reconciliation
 
@@ -91,6 +93,8 @@ struct SessionState: Equatable, Identifiable, Sendable {
         normalizedInteraction: SessionInteractionRequest? = nil,
         activeInteraction: SessionInteractionRequest? = nil,
         pendingInteractionCount: Int = 0,
+        dismissedInteractionToolUseIds: Set<String> = [],
+        pendingSubmittedInteractionToolUseIds: Set<String> = [],
         needsClearReconciliation: Bool = false,
         lastActivity: Date = Date(),
         createdAt: Date = Date()
@@ -110,6 +114,8 @@ struct SessionState: Equatable, Identifiable, Sendable {
         self.normalizedInteraction = normalizedInteraction
         self.activeInteraction = activeInteraction
         self.pendingInteractionCount = pendingInteractionCount
+        self.dismissedInteractionToolUseIds = dismissedInteractionToolUseIds
+        self.pendingSubmittedInteractionToolUseIds = pendingSubmittedInteractionToolUseIds
         self.needsClearReconciliation = needsClearReconciliation
         self.lastActivity = lastActivity
         self.createdAt = createdAt

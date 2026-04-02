@@ -717,6 +717,8 @@ actor ConversationParser {
 
     private static func parseBashResult(_ data: [String: Any]) -> ToolResultData {
         return .bash(BashResult(
+            command: data["command"] as? String,
+            workingDirectory: data["cwd"] as? String ?? data["workdir"] as? String,
             stdout: data["stdout"] as? String ?? "",
             stderr: data["stderr"] as? String ?? "",
             interrupted: data["interrupted"] as? Bool ?? false,
@@ -825,7 +827,7 @@ actor ConversationParser {
     private static func parseAskUserQuestionResult(_ data: [String: Any]) -> ToolResultData {
         var questions: [QuestionItem] = []
         if let questionsArray = data["questions"] as? [[String: Any]] {
-            questions = questionsArray.compactMap { q -> QuestionItem? in
+            questions = questionsArray.enumerated().compactMap { index, q -> QuestionItem? in
                 guard let question = q["question"] as? String else { return nil }
                 var options: [QuestionOption] = []
                 if let optionsArray = q["options"] as? [[String: Any]] {
@@ -838,6 +840,7 @@ actor ConversationParser {
                     }
                 }
                 return QuestionItem(
+                    id: q["id"] as? String ?? "question-\(index)",
                     question: question,
                     header: q["header"] as? String,
                     options: options
@@ -848,6 +851,26 @@ actor ConversationParser {
         var answers: [String: String] = [:]
         if let answersDict = data["answers"] as? [String: String] {
             answers = answersDict
+        } else if let answersArray = data["answers"] as? [String] {
+            answers = answersArray.enumerated().reduce(into: [String: String]()) { partialResult, item in
+                let (index, answer) = item
+                guard questions.indices.contains(index) else { return }
+                partialResult[questions[index].id] = answer
+            }
+        } else if let nestedAnswers = data["answers"] as? [String: Any] {
+            answers = nestedAnswers.reduce(into: [String: String]()) { partialResult, item in
+                let (questionId, rawAnswer) = item
+                if let nested = rawAnswer as? [String: Any],
+                   let first = (nested["answers"] as? [Any])?.first {
+                    if let answer = first as? String, !answer.isEmpty {
+                        partialResult[questionId] = answer
+                    } else if let number = first as? NSNumber {
+                        partialResult[questionId] = number.stringValue
+                    }
+                } else if let answer = rawAnswer as? String, !answer.isEmpty {
+                    partialResult[questionId] = answer
+                }
+            }
         }
 
         return .askUserQuestion(AskUserQuestionResult(

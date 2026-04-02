@@ -128,14 +128,67 @@ class ClaudeSessionMonitor: ObservableObject {
         }
 
         if let toolUseId = interaction.toolUseId,
+           interaction.canSubmitViaHookSocket,
            let updatedInput = interaction.programmaticUpdatedInput(for: responses) {
-            HookSocketServer.shared.respondToInteraction(
+            let writeResult = await HookSocketServer.shared.respondToInteraction(
                 toolUseId: toolUseId,
                 updatedInput: updatedInput
             )
 
+            guard writeResult == .success else {
+                let result = InteractionSubmitResult.failure(
+                    writeResult.errorDescription ?? "Failed to submit interaction response",
+                    transport: .hookSocket
+                )
+                interactionSubmitErrors[sessionId] = result.error
+                return result
+            }
+
             await SessionStore.shared.process(
-                .interactionSubmitted(sessionId: sessionId, toolUseId: toolUseId)
+                .interactionSubmitted(
+                    sessionId: sessionId,
+                    toolUseId: toolUseId,
+                    result: ToolCompletionResult(
+                        status: .success,
+                        result: nil,
+                        structuredResult: .askUserQuestion(interaction.askUserQuestionResult(for: responses))
+                    )
+                )
+            )
+
+            return .success(via: .hookSocket)
+        }
+
+        // Codex request_user_input / Gemini ask_user: build updatedInput from responses
+        if let toolUseId = interaction.toolUseId,
+           interaction.canSubmitViaHookSocket,
+           interaction.programmaticStrategy == .none,
+           let updatedInput = interaction.simpleProgrammaticUpdatedInput(for: responses) {
+
+            let writeResult = await HookSocketServer.shared.respondToInteraction(
+                toolUseId: toolUseId,
+                updatedInput: updatedInput
+            )
+
+            guard writeResult == .success else {
+                let result = InteractionSubmitResult.failure(
+                    writeResult.errorDescription ?? "Failed to submit interaction response",
+                    transport: .hookSocket
+                )
+                interactionSubmitErrors[sessionId] = result.error
+                return result
+            }
+
+            await SessionStore.shared.process(
+                .interactionSubmitted(
+                    sessionId: sessionId,
+                    toolUseId: toolUseId,
+                    result: ToolCompletionResult(
+                        status: .success,
+                        result: nil,
+                        structuredResult: .askUserQuestion(interaction.askUserQuestionResult(for: responses))
+                    )
+                )
             )
 
             return .success(via: .hookSocket)
@@ -154,6 +207,14 @@ class ClaudeSessionMonitor: ObservableObject {
         )
 
         if result.succeeded,
+           !result.confirmed,
+           let toolUseId = interaction.toolUseId {
+            await SessionStore.shared.process(
+                .interactionSubmissionPending(sessionId: sessionId, toolUseId: toolUseId)
+            )
+        }
+
+        if result.confirmed,
            let permission = session.activePermission,
            interaction.toolUseId == permission.toolUseId,
            let decisionId = responses.first?.option.id {

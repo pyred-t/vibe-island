@@ -21,6 +21,8 @@ struct ToolResultContent: View {
                 EditResultContent(result: r, toolInput: tool.input)
             case .write(let r):
                 WriteResultContent(result: r)
+            case .patch(let r):
+                PatchResultContent(result: r)
             case .bash(let r):
                 BashResultContent(result: r)
             case .grep(let r):
@@ -108,6 +110,31 @@ struct ReadResultContent: View {
     }
 }
 
+// MARK: - Patch Result View
+
+struct PatchResultContent: View {
+    let result: PatchResult
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if !result.files.isEmpty {
+                FileListView(files: result.files, limit: 8)
+            }
+
+            if let summary = result.summary, !summary.isEmpty {
+                Text(summary)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.55))
+                    .lineLimit(4)
+            }
+
+            if !result.diff.isEmpty {
+                CodePreview(content: result.diff, maxLines: 18)
+            }
+        }
+    }
+}
+
 // MARK: - Edit Result View
 
 struct EditResultContent: View {
@@ -180,6 +207,20 @@ struct BashResultContent: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
+            if let command = result.command, !command.isEmpty {
+                Text("$ \(command)")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.75))
+                    .textSelection(.enabled)
+            }
+
+            if let workingDirectory = result.workingDirectory, !workingDirectory.isEmpty {
+                Text("cwd: \(workingDirectory)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.45))
+                    .textSelection(.enabled)
+            }
+
             // Background task indicator
             if let bgId = result.backgroundTaskId {
                 HStack(spacing: 4) {
@@ -466,7 +507,8 @@ struct AskUserQuestionResultContent: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            ForEach(Array(result.questions.enumerated()), id: \.offset) { index, question in
+            ForEach(Array(result.questions.indices), id: \.self) { index in
+                let question = result.questions[index]
                 VStack(alignment: .leading, spacing: 4) {
                     // Question
                     Text(question.question)
@@ -474,7 +516,7 @@ struct AskUserQuestionResultContent: View {
                         .foregroundColor(.white.opacity(0.6))
 
                     // Answer
-                    if let answer = result.answers["\(index)"] {
+                    if let answer = result.answer(for: question, index: index) {
                         HStack(spacing: 4) {
                             Image(systemName: "arrow.turn.down.right")
                                 .font(.system(size: 9))

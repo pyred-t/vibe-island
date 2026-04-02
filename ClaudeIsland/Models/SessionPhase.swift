@@ -30,12 +30,40 @@ struct PermissionContext: Sendable {
                 valueStr = String(num)
             case let bool as Bool:
                 valueStr = bool ? "true" : "false"
+            case let dict as [String: Any]:
+                valueStr = Self.formatJSONObject(dict)
+            case let array as [Any]:
+                valueStr = Self.formatJSONArray(array)
             default:
                 valueStr = "..."
             }
             parts.append("\(key): \(valueStr)")
         }
         return parts.joined(separator: "\n")
+    }
+
+    private static func formatJSONObject(_ object: [String: Any]) -> String {
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object, options: [.fragmentsAllowed]),
+              var string = String(data: data, encoding: .utf8) else {
+            return "..."
+        }
+        if string.count > 160 {
+            string = String(string.prefix(160)) + "..."
+        }
+        return string
+    }
+
+    private static func formatJSONArray(_ array: [Any]) -> String {
+        guard JSONSerialization.isValidJSONObject(array),
+              let data = try? JSONSerialization.data(withJSONObject: array, options: [.fragmentsAllowed]),
+              var string = String(data: data, encoding: .utf8) else {
+            return "..."
+        }
+        if string.count > 160 {
+            string = String(string.prefix(160)) + "..."
+        }
+        return string
     }
 }
 

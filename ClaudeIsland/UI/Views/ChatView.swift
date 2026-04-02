@@ -698,13 +698,60 @@ struct ToolCallView: View {
         tool.result != nil || tool.structuredResult != nil
     }
 
+    private var pendingDetailsText: String? {
+        guard tool.status == .running || tool.status == .waitingForApproval else {
+            return nil
+        }
+
+        if let question = tool.input["interaction_question"], !question.isEmpty {
+            let options = tool.input["interaction_options"] ?? ""
+            return options.isEmpty ? question : "\(question)\n\(options)"
+        }
+
+        if tool.name == "request_user_input",
+           let rawQuestions = tool.input["questions"],
+           let formatted = formatQuestions(rawQuestions) {
+            return formatted
+        }
+
+        if tool.status == .waitingForApproval {
+            let interestingKeys = [
+                "command", "justification", "description", "reason",
+                "permission_request_text", "request_text", "path", "file_path",
+                "source_tool_input_json"
+            ]
+
+            let lines = interestingKeys.compactMap { key -> String? in
+                guard let value = tool.input[key], !value.isEmpty else { return nil }
+                return "\(key): \(value)"
+            }
+
+            return lines.isEmpty ? nil : lines.joined(separator: "\n")
+        }
+
+        return nil
+    }
+
     /// Whether the tool can be expanded (has result, NOT Task tools, NOT Edit tools)
     private var canExpand: Bool {
-        tool.name != "Task" && tool.name != "Edit" && hasResult
+        tool.name != "Task" && tool.name != "Edit" && (hasResult || pendingDetailsText != nil)
+    }
+
+    private var showsAskUserResultInline: Bool {
+        guard tool.status != .running && tool.status != .waitingForApproval,
+              let structuredResult = tool.structuredResult else {
+            return false
+        }
+
+        if case .askUserQuestion = structuredResult {
+            return true
+        }
+
+        return false
     }
 
     private var showContent: Bool {
-        tool.name == "Edit" || isExpanded
+        tool.name == "Edit" || isExpanded || pendingDetailsText != nil || showsAskUserResultInline
     }
 
     private var agentDescription: String? {
@@ -782,6 +829,12 @@ struct ToolCallView: View {
                     .padding(.top, 2)
             }
 
+            if let pendingDetailsText, showContent && tool.name != "Task" && tool.name != "Edit" {
+                PendingToolDetailsView(text: pendingDetailsText)
+                    .padding(.leading, 12)
+                    .padding(.top, 4)
+            }
+
             // Result content (Edit always shows, others when expanded)
             // Edit tools bypass hasResult check - fallback in ToolResultContent renders from input params
             if showContent && tool.status != .running && tool.name != "Task" && (hasResult || tool.name == "Edit") {
@@ -824,6 +877,43 @@ struct ToolCallView: View {
             .repeatForever(autoreverses: true)
         ) {
             pulseOpacity = 0.15
+        }
+    }
+
+    private func formatQuestions(_ rawQuestions: String) -> String? {
+        guard let data = rawQuestions.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return nil
+        }
+
+        let lines = json.compactMap { question -> String? in
+            guard let text = question["question"] as? String else { return nil }
+            let options = (question["options"] as? [[String: Any]] ?? []).compactMap { option -> String? in
+                guard let label = option["label"] as? String else { return nil }
+                if let description = option["description"] as? String, !description.isEmpty {
+                    return "- \(label): \(description)"
+                }
+                return "- \(label)"
+            }
+            return ([text] + options).joined(separator: "\n")
+        }
+
+        let joined = lines.joined(separator: "\n\n")
+        return joined.isEmpty ? nil : joined
+    }
+}
+
+struct PendingToolDetailsView: View {
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            Text(text)
+                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                .foregroundColor(.white.opacity(0.72))
+                .multilineTextAlignment(.leading)
+                .textSelection(.enabled)
+            Spacer(minLength: 0)
         }
     }
 }
@@ -1098,6 +1188,19 @@ struct ChatInteractionPromptBar: View {
         return interaction.questions[min(currentQuestionIndex, interaction.questions.count - 1)]
     }
 
+    private var interactionSubmitContext: String {
+        switch interaction.responseCapability {
+        case .nativeHookAvailable:
+            return "Reply directly from island"
+        case .keyboardFallbackAvailable:
+            return "Reply via terminal keyboard fallback"
+        case .directTextAvailable:
+            return "Reply directly from island"
+        case .detectOnly:
+            return "Detected options only; no submit channel is available"
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
@@ -1111,7 +1214,7 @@ struct ChatInteractionPromptBar: View {
                             .fill(TerminalColors.amber.opacity(0.14))
                     )
 
-                Text(interaction.submitMode == .focusOnly ? "Open host app if direct submit is unavailable" : "Reply directly from island")
+                Text(interactionSubmitContext)
                     .font(.system(size: 11))
                     .foregroundColor(.white.opacity(0.5))
                     .lineLimit(1)

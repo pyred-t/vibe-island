@@ -28,7 +28,10 @@ enum SessionEvent: Sendable {
     case permissionSocketFailed(sessionId: String, toolUseId: String)
 
     /// User answered a pending structured interaction via the native hook path
-    case interactionSubmitted(sessionId: String, toolUseId: String?)
+    case interactionSubmitted(sessionId: String, toolUseId: String?, result: ToolCompletionResult?)
+
+    /// User submitted an interaction through a non-authoritative path and we are waiting for agent confirmation
+    case interactionSubmissionPending(sessionId: String, toolUseId: String)
 
     // MARK: - File Events (from ConversationParser)
 
@@ -100,6 +103,7 @@ struct FileUpdatePayload: Sendable {
     let completedToolIds: Set<String>
     let toolResults: [String: ConversationParser.ToolResult]
     let structuredResults: [String: ToolResultData]
+    let conversationInfo: ConversationInfo
 }
 
 /// Result of a tool completion detected from JSONL
@@ -147,9 +151,10 @@ extension HookEvent {
 
         // Permission request creates waitingForApproval state
         if expectsPermissionResponse, let tool = tool {
+            let normalizedTool = ExternalAgentToolSupport.normalizeToolName(agentId: agentId, rawName: tool)
             return .waitingForApproval(PermissionContext(
                 toolUseId: toolUseId ?? "",
-                toolName: tool,
+                toolName: normalizedTool,
                 toolInput: toolInput,
                 receivedAt: Date()
             ))
@@ -188,9 +193,9 @@ extension HookEvent {
 
     /// Whether this event should trigger a file sync
     nonisolated var shouldSyncFile: Bool {
-        guard agentId == "claude" else { return false }
+        guard ["claude", "codex", "gemini"].contains(agentId) else { return false }
         switch event {
-        case "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop":
+        case "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Stop":
             return true
         default:
             return false
@@ -211,9 +216,11 @@ extension SessionEvent: CustomStringConvertible {
             return "permissionDenied(session: \(sessionId.prefix(8)), tool: \(toolUseId.prefix(12)))"
         case .permissionSocketFailed(let sessionId, let toolUseId):
             return "permissionSocketFailed(session: \(sessionId.prefix(8)), tool: \(toolUseId.prefix(12)))"
-        case .interactionSubmitted(let sessionId, let toolUseId):
+        case .interactionSubmitted(let sessionId, let toolUseId, _):
             let toolLabel = toolUseId.map { String($0.prefix(12)) } ?? "none"
             return "interactionSubmitted(session: \(sessionId.prefix(8)), tool: \(toolLabel))"
+        case .interactionSubmissionPending(let sessionId, let toolUseId):
+            return "interactionSubmissionPending(session: \(sessionId.prefix(8)), tool: \(toolUseId.prefix(12)))"
         case .fileUpdated(let payload):
             return "fileUpdated(session: \(payload.sessionId.prefix(8)), messages: \(payload.messages.count))"
         case .interruptDetected(let sessionId):

@@ -53,7 +53,7 @@ struct GeminiCLIAgent: AIAgent {
 
         for message in messages {
             let role = message["type"] as? String ?? "info"
-            let text = extractMessageText(from: message["content"])
+            let text = preferredDisplayText(for: message)
 
             if role == "user", firstUserMessage == nil {
                 firstUserMessage = Self.truncate(text, maxLength: 50)
@@ -105,15 +105,27 @@ struct GeminiCLIAgent: AIAgent {
         for (index, message) in messages.enumerated().reversed() {
             let timestamp = (message["timestamp"] as? String).flatMap { formatter.date(from: $0) } ?? conversation.lastUpdated
 
-            if let content = extractMessageText(from: message["content"]),
-               let interaction = SessionInteractionRequest.fromHeuristicText(
+            if let interaction = parseStructuredInteraction(
+                from: message,
+                sessionId: conversation.sessionId,
+                interactionId: "gemini-message-\(index)",
+                submitMode: submitMode,
+                timestamp: timestamp
+            ) {
+                return interaction
+            }
+
+            let candidates = interactionCandidateTexts(for: message)
+            if let interaction = candidates.lazy.compactMap({ candidate in
+                SessionInteractionRequest.fromHeuristicText(
                     sessionId: conversation.sessionId,
                     interactionId: "gemini-message-\(index)",
                     sourceAgent: "gemini",
-                    text: content,
+                    text: candidate,
                     timestamp: timestamp,
                     submitMode: submitMode
-               ) {
+                )
+            }).first {
                 return interaction
             }
         }
@@ -122,31 +134,127 @@ struct GeminiCLIAgent: AIAgent {
     }
 
     func parseFullConversation(sessionId: String, cwd: String) -> [ChatMessage] {
+        parseHistory(sessionId: sessionId, cwd: cwd).messages
+    }
+
+    func parseHistory(sessionId: String, cwd: String) -> AgentHistorySnapshot {
         guard let conversation = resolveConversation(sessionId: sessionId, cwd: cwd),
               let data = FileManager.default.contents(atPath: conversation.chatPath),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return []
+            return AgentHistorySnapshot(
+                messages: [],
+                completedToolIds: [],
+                toolResults: [:],
+                structuredResults: [:],
+                conversationInfo: ConversationInfo(
+                    summary: nil,
+                    lastMessage: nil,
+                    lastMessageRole: nil,
+                    lastToolName: nil,
+                    firstUserMessage: nil,
+                    lastUserMessage: nil,
+                    lastUserMessageDate: nil
+                )
+            )
         }
 
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let messages = json["messages"] as? [[String: Any]] ?? []
+        var parsedMessages: [ChatMessage] = []
+        var completedToolIds: Set<String> = []
+        var toolResults: [String: ConversationParser.ToolResult] = [:]
+        var structuredResults: [String: ToolResultData] = [:]
 
-        return messages.enumerated().compactMap { index, message in
+        for (index, message) in messages.enumerated() {
             let role = message["type"] as? String ?? "info"
-            let text = extractMessageText(from: message["content"])?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !text.isEmpty else { return nil }
-
             let timestamp = (message["timestamp"] as? String).flatMap { formatter.date(from: $0) } ?? conversation.lastUpdated
-            let chatRole: ChatRole = role == "user" ? .user : .assistant
+            let chatRole: ChatRole
+            switch role {
+            case "user":
+                chatRole = .user
+            case "info":
+                chatRole = .system
+            default:
+                chatRole = .assistant
+            }
 
-            return ChatMessage(
-                id: "gemini-\(index)",
-                role: chatRole,
-                timestamp: timestamp,
-                content: [.text(text)]
+            var blocks: [MessageBlock] = []
+            var messageCompletedToolIds: Set<String> = []
+
+            if let thoughts = message["thoughts"] as? [[String: Any]] {
+                blocks.append(contentsOf: thoughts.compactMap(parseThoughtBlock))
+            }
+
+            if let text = extractMessageText(from: message["content"])?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !text.isEmpty {
+                blocks.append(.text(text))
+            }
+
+            if blocks.filter({ if case .text = $0 { return true }; return false }).isEmpty,
+               let fallbackText = extractToolFallbackText(fromMessage: message) {
+                blocks.append(.text(fallbackText))
+            }
+
+            if let toolCalls = message["toolCalls"] as? [[String: Any]] {
+                for toolCall in toolCalls {
+                    if let block = parseToolUseBlock(from: toolCall) {
+                        blocks.append(.toolUse(block))
+                    }
+                    if let completedId = completedToolId(from: toolCall) {
+                        messageCompletedToolIds.insert(completedId)
+                        if let rawToolName = toolCall["name"] as? String {
+                            let normalizedInput = ExternalAgentToolSupport.normalizeToolInput(
+                                agentId: id,
+                                rawName: rawToolName,
+                                input: serializeToolInput(toolCall["args"] as? [String: Any] ?? [:])
+                            )
+                            let parsed = ExternalAgentToolSupport.parseResult(
+                                agentId: id,
+                                rawToolName: rawToolName,
+                                toolInput: normalizedInput,
+                                rawOutput: nil,
+                                rawPayload: toolCall
+                            )
+                            if let parserResult = parsed.parserResult {
+                                toolResults[completedId] = parserResult
+                            }
+                            if let structuredResult = parsed.structuredResult {
+                                structuredResults[completedId] = structuredResult
+                            }
+                        }
+                    }
+                }
+            }
+
+            guard !blocks.isEmpty else { continue }
+            completedToolIds.formUnion(messageCompletedToolIds)
+
+            parsedMessages.append(
+                ChatMessage(
+                    id: "gemini-\(index)",
+                    role: chatRole,
+                    timestamp: timestamp,
+                    content: blocks
+                )
             )
         }
+
+        return AgentHistorySnapshot(
+            messages: parsedMessages,
+            completedToolIds: completedToolIds,
+            toolResults: toolResults,
+            structuredResults: structuredResults,
+            conversationInfo: parseConversation(sessionId: sessionId, cwd: cwd) ?? ConversationInfo(
+                summary: nil,
+                lastMessage: nil,
+                lastMessageRole: nil,
+                lastToolName: nil,
+                firstUserMessage: conversation.projectName,
+                lastUserMessage: nil,
+                lastUserMessageDate: conversation.lastUpdated
+            )
+        )
     }
 
     func resolveCurrentConversation(cwd: String) -> ResolvedGeminiConversation? {
@@ -241,12 +349,306 @@ struct GeminiCLIAgent: AIAgent {
 
     private func extractMessageText(from rawContent: Any?) -> String? {
         if let text = rawContent as? String {
-            return text
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
         }
         if let parts = rawContent as? [[String: Any]] {
-            let texts = parts.compactMap { $0["text"] as? String }
+            let texts = parts.compactMap { part -> String? in
+                let text = part["text"] as? String
+                let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return trimmed.isEmpty ? nil : trimmed
+            }
             let joined = texts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
             return joined.isEmpty ? nil : joined
+        }
+        return nil
+    }
+
+    private func preferredDisplayText(for message: [String: Any]) -> String? {
+        if let contentText = extractMessageText(from: message["content"]) {
+            return contentText
+        }
+
+        if let toolFallback = extractToolFallbackText(fromMessage: message) {
+            return toolFallback
+        }
+
+        let thoughtTexts = (message["thoughts"] as? [[String: Any]] ?? []).compactMap { thought in
+            parseThoughtBlock(from: thought)?.thinkingText
+        }
+        let joinedThoughts = thoughtTexts.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return joinedThoughts.isEmpty ? nil : joinedThoughts
+    }
+
+    private func interactionCandidateTexts(for message: [String: Any]) -> [String] {
+        var candidates: [String] = []
+
+        if let contentText = extractMessageText(from: message["content"]) {
+            candidates.append(contentText)
+        }
+
+        if let fallbackText = extractToolFallbackText(fromMessage: message),
+           !candidates.contains(fallbackText) {
+            candidates.append(fallbackText)
+        }
+
+        return candidates
+    }
+
+    private func extractToolFallbackText(fromMessage message: [String: Any]) -> String? {
+        guard let toolCalls = message["toolCalls"] as? [[String: Any]], !toolCalls.isEmpty else {
+            return nil
+        }
+
+        var snippets: [String] = []
+        for toolCall in toolCalls {
+            if let snippet = extractToolFallbackText(from: toolCall),
+               !snippet.isEmpty,
+               !snippets.contains(snippet) {
+                snippets.append(snippet)
+            }
+        }
+
+        let joined = snippets.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return joined.isEmpty ? nil : joined
+    }
+
+    private func extractToolFallbackText(from toolCall: [String: Any]) -> String? {
+        let toolName = (toolCall["name"] as? String ?? "").lowercased()
+        let resultDisplay = trimmedString(toolCall["resultDisplay"])
+        let renderOutputAsMarkdown = toolCall["renderOutputAsMarkdown"] as? Bool ?? false
+
+        guard let responseText = extractToolResponseText(from: toolCall) else {
+            return shouldPromoteToolResultDisplay(toolName: toolName, resultDisplay: resultDisplay) ? resultDisplay : nil
+        }
+
+        if shouldPromoteToolResponse(
+            toolName: toolName,
+            responseText: responseText,
+            resultDisplay: resultDisplay,
+            renderOutputAsMarkdown: renderOutputAsMarkdown
+        ) {
+            return responseText
+        }
+
+        if shouldPromoteToolResultDisplay(toolName: toolName, resultDisplay: resultDisplay) {
+            return resultDisplay
+        }
+
+        return nil
+    }
+
+    private func extractToolResponseText(from toolCall: [String: Any]) -> String? {
+        guard let results = toolCall["result"] as? [[String: Any]], !results.isEmpty else {
+            return nil
+        }
+
+        var fragments: [String] = []
+        for result in results {
+            guard let functionResponse = result["functionResponse"] as? [String: Any],
+                  let response = functionResponse["response"] as? [String: Any] else {
+                continue
+            }
+
+            if let output = trimmedString(response["output"]) {
+                fragments.append(output)
+            } else if let error = trimmedString(response["error"]) {
+                fragments.append(error)
+            }
+        }
+
+        let joined = fragments.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return joined.isEmpty ? nil : joined
+    }
+
+    private func shouldPromoteToolResponse(
+        toolName: String,
+        responseText: String,
+        resultDisplay: String?,
+        renderOutputAsMarkdown: Bool
+    ) -> Bool {
+        if shouldSuppressVerboseToolResponse(toolName: toolName, responseText: responseText) {
+            return false
+        }
+
+        if toolName == "ask_user" {
+            return true
+        }
+
+        if responseText.count <= 1200 {
+            return true
+        }
+
+        if renderOutputAsMarkdown && looksLikeStructuredMarkdown(responseText) {
+            return true
+        }
+
+        if let resultDisplay, !resultDisplay.isEmpty, responseText.contains(resultDisplay) {
+            return true
+        }
+
+        return false
+    }
+
+    private func shouldPromoteToolResultDisplay(toolName: String, resultDisplay: String?) -> Bool {
+        guard let resultDisplay, !resultDisplay.isEmpty else { return false }
+        if toolName == "read_file" || toolName == "list_directory" {
+            return false
+        }
+        return resultDisplay.count <= 400
+    }
+
+    private func shouldSuppressVerboseToolResponse(toolName: String, responseText: String) -> Bool {
+        if ["read_file", "list_directory"].contains(toolName) {
+            return true
+        }
+
+        if responseText.hasPrefix("Directory listing for ") {
+            return true
+        }
+
+        if responseText.hasPrefix("<!doctype html") || responseText.hasPrefix("import ") {
+            return true
+        }
+
+        return responseText.count > 2000 && !looksLikeStructuredMarkdown(responseText)
+    }
+
+    private func looksLikeStructuredMarkdown(_ text: String) -> Bool {
+        let markdownSignals = [
+            "\n#",
+            "\n##",
+            "\n- ",
+            "\n* ",
+            "\n1. ",
+            "```",
+            "| ---"
+        ]
+        return markdownSignals.contains { text.contains($0) }
+    }
+
+    private func trimmedString(_ rawValue: Any?) -> String? {
+        guard let text = rawValue as? String else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func parseThoughtBlock(from rawThought: [String: Any]) -> MessageBlock? {
+        let subject = (rawThought["subject"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let description = (rawThought["description"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let text = [subject, description]
+            .compactMap { value in
+                guard let value, !value.isEmpty else { return nil }
+                return value
+            }
+            .joined(separator: "\n")
+
+        guard !text.isEmpty else { return nil }
+        return .thinking(text)
+    }
+
+    private func parseToolUseBlock(from rawToolCall: [String: Any]) -> ToolUseBlock? {
+        guard let id = rawToolCall["id"] as? String,
+              let rawName = rawToolCall["name"] as? String else {
+            return nil
+        }
+
+        let args = rawToolCall["args"] as? [String: Any] ?? [:]
+        let normalizedInput = ExternalAgentToolSupport.normalizeToolInput(
+            agentId: self.id,
+            rawName: rawName,
+            input: serializeToolInput(args)
+        )
+        let normalizedName = ExternalAgentToolSupport.normalizeToolName(agentId: self.id, rawName: rawName)
+        return ToolUseBlock(id: id, name: normalizedName, input: normalizedInput)
+    }
+
+    private func parseStructuredInteraction(
+        from message: [String: Any],
+        sessionId: String,
+        interactionId: String,
+        submitMode: InteractionSubmitMode,
+        timestamp: Date
+    ) -> SessionInteractionRequest? {
+        if let toolCalls = message["toolCalls"] as? [[String: Any]] {
+            for toolCall in toolCalls {
+                guard let toolId = toolCall["id"] as? String,
+                      let name = toolCall["name"] as? String else {
+                    continue
+                }
+
+                if name == "ask_user",
+                   let args = toolCall["args"] as? [String: Any],
+                   let interaction = SessionInteractionRequest.fromJSONObjectPayload(
+                        sessionId: sessionId,
+                        toolUseId: toolId,
+                        payload: args,
+                        timestamp: timestamp,
+                        sourceAgent: self.id,
+                        submitMode: submitMode
+                   ) {
+                    return interaction
+                }
+            }
+        }
+
+        if message["type"] as? String == "choice",
+           let interaction = SessionInteractionRequest.fromJSONObjectPayload(
+                sessionId: sessionId,
+                toolUseId: interactionId,
+                payload: message,
+                timestamp: timestamp,
+                sourceAgent: self.id,
+                submitMode: submitMode
+           ) {
+            return interaction
+        }
+
+        return nil
+    }
+
+    private func completedToolId(from rawToolCall: [String: Any]) -> String? {
+        guard let id = rawToolCall["id"] as? String else { return nil }
+
+        if let results = rawToolCall["result"] as? [[String: Any]], !results.isEmpty {
+            return id
+        }
+
+        if let functionResponse = rawToolCall["functionResponse"] as? [String: Any],
+           functionResponse["response"] != nil {
+            return id
+        }
+
+        return nil
+    }
+
+    private func serializeToolInput(_ payload: [String: Any]) -> [String: String] {
+        payload.reduce(into: [String: String]()) { result, entry in
+            if let stringValue = stringify(entry.value) {
+                result[entry.key] = stringValue
+            }
+        }
+    }
+
+    private func stringify(_ value: Any) -> String? {
+        if let string = value as? String {
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        if let intValue = value as? Int {
+            return String(intValue)
+        }
+        if let doubleValue = value as? Double {
+            return String(doubleValue)
+        }
+        if let boolValue = value as? Bool {
+            return boolValue ? "true" : "false"
+        }
+        if JSONSerialization.isValidJSONObject(value),
+           let data = try? JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed]),
+           let json = String(data: data, encoding: .utf8) {
+            return json
         }
         return nil
     }
@@ -321,6 +723,15 @@ struct ResolvedGeminiConversation: Sendable {
     let chatPath: String
     let projectName: String
     let lastUpdated: Date
+}
+
+private extension MessageBlock {
+    var thinkingText: String? {
+        if case .thinking(let text) = self {
+            return text
+        }
+        return nil
+    }
 }
 
 enum GeminiCLIHookConfig {

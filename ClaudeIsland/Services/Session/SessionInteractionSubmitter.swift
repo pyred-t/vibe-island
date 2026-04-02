@@ -19,6 +19,17 @@ actor SessionInteractionSubmitter {
         responses: [InteractionResponse],
         session: SessionState
     ) async -> InteractionSubmitResult {
+        if interaction.sourceAgent == "codex" {
+            if interaction.responseCapability == .keyboardFallbackAvailable {
+                return await submitCodexViaKeyboardFallback(
+                    interaction: interaction,
+                    responses: responses,
+                    session: session
+                )
+            }
+            return .failure("Codex interactions must resolve through the hook socket; refusing terminal text injection")
+        }
+
         if interaction.transportPreference == .programmaticOnly {
             return .failure("This interaction must be handled programmatically")
         }
@@ -29,21 +40,13 @@ actor SessionInteractionSubmitter {
         }
 
         var failures: [InteractionSubmitResult] = []
-        let preferAccessibilityBeforeTTY = shouldPreferAccessibilityInjection(for: session)
+        let allowAccessibilityInjection = canUseAccessibilityInjection(for: session)
 
         if let tmuxResult = await submitViaTmuxIfPossible(session: session, messages: messages) {
             if tmuxResult.succeeded {
                 return tmuxResult
             }
             failures.append(tmuxResult)
-        }
-
-        if preferAccessibilityBeforeTTY {
-            let accessibilityResult = await submitViaAccessibilityIfPossible(session: session, messages: messages)
-            if accessibilityResult.succeeded {
-                return accessibilityResult
-            }
-            failures.append(accessibilityResult)
         }
 
         if let ttyResult = await submitViaTTYIfPossible(session: session, messages: messages) {
@@ -53,7 +56,7 @@ actor SessionInteractionSubmitter {
             failures.append(ttyResult)
         }
 
-        if !preferAccessibilityBeforeTTY {
+        if allowAccessibilityInjection {
             let accessibilityResult = await submitViaAccessibilityIfPossible(session: session, messages: messages)
             if accessibilityResult.succeeded {
                 return accessibilityResult
@@ -64,7 +67,48 @@ actor SessionInteractionSubmitter {
         return failures.last ?? .failure("Failed to submit interaction")
     }
 
-    private func shouldPreferAccessibilityInjection(for session: SessionState) -> Bool {
+    private func submitCodexViaKeyboardFallback(
+        interaction: SessionInteractionRequest,
+        responses: [InteractionResponse],
+        session: SessionState
+    ) async -> InteractionSubmitResult {
+        guard AXIsProcessTrusted() else {
+            return .failure("Accessibility permission missing", transport: .keyboardFallback)
+        }
+
+        guard interaction.questions.count == 1,
+              responses.count == 1,
+              let question = interaction.questions.first,
+              let response = responses.first,
+              response.questionId == question.id,
+              let optionIndex = question.options.firstIndex(where: { $0.id == response.option.id }) else {
+            return .failure(
+                "Codex keyboard fallback currently supports one visible question and one selected option",
+                transport: .keyboardFallback
+            )
+        }
+
+        let focused = await focusCodexHostApp(for: session)
+        guard focused else {
+            return .failure("Failed to focus the Codex terminal", transport: .keyboardFallback)
+        }
+
+        try? await Task.sleep(for: .milliseconds(180))
+
+        guard postUnicodeString(String(optionIndex + 1)) else {
+            return .failure("Failed to send option key to Codex terminal", transport: .keyboardFallback)
+        }
+
+        try? await Task.sleep(for: .milliseconds(60))
+
+        guard postReturnKey() else {
+            return .failure("Failed to submit selected option in Codex terminal", transport: .keyboardFallback)
+        }
+
+        return .submittedPendingConfirmation(via: .keyboardFallback)
+    }
+
+    private func canUseAccessibilityInjection(for session: SessionState) -> Bool {
         guard let pid = session.pid else { return false }
 
         let tree = ProcessTreeBuilder.shared.buildTree()
@@ -77,6 +121,31 @@ actor SessionInteractionSubmitter {
         }
 
         return !TerminalAppRegistry.isTerminal(hostApp.displayName)
+    }
+
+    private func focusCodexHostApp(for session: SessionState) async -> Bool {
+        if session.isInTmux {
+            if let pid = session.pid,
+               await YabaiController.shared.focusWindow(forClaudePid: pid) {
+                return true
+            }
+
+            if await YabaiController.shared.focusWindow(forWorkingDirectory: session.cwd) {
+                return true
+            }
+        }
+
+        guard let pid = session.pid else { return false }
+
+        let tree = ProcessTreeBuilder.shared.buildTree()
+        guard let hostApp = HostApplicationResolver.shared.resolveHostApplication(forProcess: pid, tree: tree),
+              let app = NSRunningApplication(processIdentifier: pid_t(hostApp.activationPID)) else {
+            return false
+        }
+
+        return await MainActor.run {
+            app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+        }
     }
 
     private func submissionMessages(

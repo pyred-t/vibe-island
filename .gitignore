@@ -42,3 +42,7 @@ releases/
 # Xcode backup
 *.xcodeproj.backup/
 CLAUDE.md
+
+/.local/
+/.claude/
+/**.pyc/

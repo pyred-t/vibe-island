@@ -109,8 +109,9 @@ class NotchPanel: NSPanel {
 
         let mouseButton: CGMouseButton = event.type == .rightMouseDown || event.type == .rightMouseUp ? .right : .left
 
+        let source = CGEventSource(stateID: .hidSystemState)
         if let cgEvent = CGEvent(
-            mouseEventSource: nil,
+            mouseEventSource: source,
             mouseType: mouseType,
             mouseCursorPosition: cgPoint,
             mouseButton: mouseButton

@@ -631,7 +631,7 @@ private struct InteractionPopView: View {
                             .foregroundColor(.white)
                             .lineLimit(1)
 
-                        Text(AgentRegistry.shared.shortDisplayName(for: session?.agentId))
+                        Text(AgentRegistry.shared.shortDisplayName(for: session?.agentId ?? interaction.sourceAgent))
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundColor(accentColor.opacity(0.95))
                             .padding(.horizontal, 7)

@@ -78,6 +78,12 @@ class NotchWindowController: NSWindowController {
                     }
                 case .popping:
                     notchWindow?.ignoresMouseEvents = viewModel?.activeInteractionPop == nil
+                    // When showing an interaction pop, explicitly make the window key
+                    // so mouse events are routed to the panel's views.
+                    if viewModel?.activeInteractionPop != nil {
+                        notchWindow?.makeKey()
+                        NSApp.activate(ignoringOtherApps: false)
+                    }
                 case .closed:
                     // Ignore mouse events when closed so clicks pass through
                     notchWindow?.ignoresMouseEvents = true

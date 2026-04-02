@@ -165,8 +165,13 @@ def send_event(event):
         sock.connect(SOCKET_PATH)
         sock.sendall(json.dumps(event).encode())
 
-        if event.get("status") == "waiting_for_approval":
-            response = sock.recv(4096)
+        # Wait for response: approval events OR ask_user interactions
+        should_wait = (
+            event.get("status") == "waiting_for_approval" or
+            event.get("tool") == "ask_user"
+        )
+        if should_wait:
+            response = sock.recv(65536)
             sock.close()
             if response:
                 return json.loads(response.decode())
@@ -222,6 +227,27 @@ def main():
     }
 
     response = send_event(state)
+
+    # Handle ask_user interaction response
+    if state.get("tool") == "ask_user":
+        if response:
+            updated_input = response.get("updatedInput")
+            if updated_input:
+                answers = updated_input.get("answers", [])
+                if answers:
+                    first_answer = answers[0] if answers else None
+                    if first_answer:
+                        print(json.dumps({
+                            "hookSpecificOutput": {
+                                "hookEventName": "PreToolUse",
+                                "decision": {
+                                    "behavior": "input",
+                                    "input": first_answer
+                                }
+                            }
+                        }))
+        sys.exit(0)
+
     if state["status"] != "waiting_for_approval" or not response:
         sys.exit(0)
 

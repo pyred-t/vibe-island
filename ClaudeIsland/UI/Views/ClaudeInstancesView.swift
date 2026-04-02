@@ -218,7 +218,7 @@ struct AgentInstancesView: View {
         viewModel.consumePendingExpandedSession()
         viewModel.consumePendingScrollTarget()
     }
-
+    
     private func performDeferredScroll(to sessionId: String, with proxy: ScrollViewProxy) {
         let validIds = Set(sessionMonitor.instances.map(\.sessionId))
         guard validIds.contains(sessionId) else {
@@ -245,7 +245,7 @@ struct AgentInstancesView: View {
     private func handleInteractionResponseSelection(session: SessionState, responses: [InteractionResponse]) {
         Task {
             let result = await sessionMonitor.submitInteraction(sessionId: session.sessionId, responses: responses)
-            if result.succeeded {
+            if result.confirmed {
                 await MainActor.run {
                     expandedSessionIds.remove(session.sessionId)
                     if let interaction = session.activeInteraction {
@@ -305,7 +305,11 @@ struct AgentInstanceRow: View {
     }
 
     private var canSubmitInteractionDirectly: Bool {
-        activeInteraction?.submitMode == .ttyInjection || activeInteraction?.submitMode == .programmatic
+        guard let interaction = activeInteraction else { return false }
+        if interaction.sourceAgent == "codex" || interaction.sourceAgent == "gemini" || interaction.sourceAgent == "claude" {
+            return interaction.canSubmitDirectly
+        }
+        return interaction.submitMode == .ttyInjection || interaction.submitMode == .programmatic
     }
 
     private var agentDisplayName: String {
@@ -368,6 +372,7 @@ struct AgentInstanceRow: View {
     }
 
     private var requestUserInputContext: String {
+        interactionContextSummary ??
         lastBashCommand ??
         lastAssistantOutput ??
         session.pendingToolInput ??
@@ -375,7 +380,58 @@ struct AgentInstanceRow: View {
         "Needs your input"
     }
 
+    private var interactionContextSummary: String? {
+        guard let interaction = activeInteraction else { return nil }
+
+        var parts: [String] = []
+        let question = interaction.question.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !question.isEmpty {
+            parts.append(question)
+        }
+
+        let optionSummary = interaction.options
+            .prefix(3)
+            .map(\.label)
+            .joined(separator: " · ")
+        if !optionSummary.isEmpty {
+            parts.append(optionSummary)
+        }
+
+        guard !parts.isEmpty else { return nil }
+        return parts.joined(separator: " — ")
+    }
+
     private var latestActionDisplay: ActionTextDisplay {
+        if let permission = session.activePermission {
+            if permission.toolName == "AskUserQuestion" || permission.toolName == "request_user_input" {
+                return .highlighted(label: "request user input", detail: requestUserInputContext, color: TerminalColors.amber)
+            }
+
+            if permission.toolName == "Bash",
+               let command = session.pendingToolInput,
+               !command.isEmpty {
+                return .highlighted(label: "Bash", detail: command, color: agentAccentColor)
+            }
+
+            if let input = session.pendingToolInput, !input.isEmpty {
+                return .highlighted(
+                    label: MCPToolFormatter.formatToolName(permission.toolName),
+                    detail: input,
+                    color: TerminalColors.amber
+                )
+            }
+
+            return .highlighted(
+                label: MCPToolFormatter.formatToolName(permission.toolName),
+                detail: "waiting for approval",
+                color: TerminalColors.amber
+            )
+        }
+
+        if activeInteraction != nil {
+            return .highlighted(label: "request user input", detail: requestUserInputContext, color: TerminalColors.amber)
+        }
+
         if isWaitingForApproval, let toolName = session.pendingToolName {
             if toolName == "AskUserQuestion" {
                 return .highlighted(label: "request user input", detail: requestUserInputContext, color: TerminalColors.amber)
@@ -549,6 +605,19 @@ private struct SessionInteractionCard: View {
         return interaction.questions[min(currentQuestionIndex, interaction.questions.count - 1)]
     }
 
+    private var interactionSubmitContext: String {
+        switch interaction.responseCapability {
+        case .nativeHookAvailable:
+            return "Reply directly from island"
+        case .keyboardFallbackAvailable:
+            return "Reply via terminal keyboard fallback"
+        case .directTextAvailable:
+            return "Sent directly to the session"
+        case .detectOnly:
+            return "Detected options only; no submit channel is available"
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
@@ -562,7 +631,7 @@ private struct SessionInteractionCard: View {
                             .fill(accentColor.opacity(0.16))
                     )
 
-                Text(canSubmitDirectly ? "Sent directly to the session" : "Opens the host app if direct submit is unavailable")
+                Text(interactionSubmitContext)
                     .font(.system(size: 10))
                     .foregroundColor(.white.opacity(0.42))
                     .lineLimit(1)

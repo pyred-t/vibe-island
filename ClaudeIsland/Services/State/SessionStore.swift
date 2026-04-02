@@ -18,6 +18,7 @@ actor SessionStore {
 
     /// Logger for session store (nonisolated static for cross-context access)
     nonisolated static let logger = Logger(subsystem: "com.claudeisland", category: "Session")
+    nonisolated static let interactionLogPath = "/tmp/claude-island-interactions.log"
 
     // MARK: - State
 
@@ -44,6 +45,29 @@ actor SessionStore {
 
     private init() {}
 
+    nonisolated private static func appendInteractionDebug(kind: String, values: [String: Any]) {
+        let record: [String: Any] = [
+            "timestamp": ISO8601DateFormatter().string(from: Date()),
+            "kind": kind,
+            "values": values
+        ]
+        guard JSONSerialization.isValidJSONObject(record),
+              let data = try? JSONSerialization.data(withJSONObject: record, options: []),
+              let line = String(data: data, encoding: .utf8) else {
+            return
+        }
+        if let handle = FileHandle(forWritingAtPath: interactionLogPath) {
+            defer { try? handle.close() }
+            try? handle.seekToEnd()
+            try? handle.write(contentsOf: Data((line + "\n").utf8))
+        } else {
+            FileManager.default.createFile(
+                atPath: interactionLogPath,
+                contents: Data((line + "\n").utf8)
+            )
+        }
+    }
+
     // MARK: - Event Processing
 
     /// Process any session event - the ONLY way to mutate state
@@ -63,8 +87,11 @@ actor SessionStore {
         case .permissionSocketFailed(let sessionId, let toolUseId):
             await processSocketFailure(sessionId: sessionId, toolUseId: toolUseId)
 
-        case .interactionSubmitted(let sessionId, let toolUseId):
-            await processInteractionSubmitted(sessionId: sessionId, toolUseId: toolUseId)
+        case .interactionSubmitted(let sessionId, let toolUseId, let result):
+            await processInteractionSubmitted(sessionId: sessionId, toolUseId: toolUseId, result: result)
+
+        case .interactionSubmissionPending(let sessionId, let toolUseId):
+            await processInteractionSubmissionPending(sessionId: sessionId, toolUseId: toolUseId)
 
         case .fileUpdated(let payload):
             await processFileUpdate(payload)
@@ -127,6 +154,12 @@ actor SessionStore {
     // MARK: - Hook Event Processing
 
     private func processHookEvent(_ event: HookEvent) async {
+        if event.agentId == "codex" {
+            Self.logger.debug(
+                "Codex hook event normalized: event=\(event.event, privacy: .public) session=\(event.sessionId, privacy: .public) tool=\(event.tool ?? "nil", privacy: .public) toolUseId=\(event.toolUseId ?? "nil", privacy: .public) status=\(event.status, privacy: .public)"
+            )
+        }
+
         let sessionId = event.sessionId
         let isNewSession = sessions[sessionId] == nil
         var session = sessions[sessionId] ?? createSession(from: event)
@@ -183,12 +216,13 @@ actor SessionStore {
         }
 
         refreshInteractionState(for: &session)
+        syncLiveInteractionHistory(for: &session)
 
         sessions[sessionId] = session
         publishState()
 
         if event.shouldSyncFile {
-            scheduleFileSync(sessionId: sessionId, cwd: event.cwd)
+            scheduleFileSync(sessionId: sessionId, cwd: event.cwd, agentId: event.agentId)
         }
     }
 
@@ -249,6 +283,7 @@ actor SessionStore {
             session.conversationInfo = conversationInfo
         }
         refreshInteractionState(for: &session)
+        syncLiveInteractionHistory(for: &session)
 
         sessions[sessionId] = session
         publishState()
@@ -284,12 +319,30 @@ actor SessionStore {
            ) {
             session.activeInteraction = interaction
             session.pendingInteractionCount = 1
+            Self.appendInteractionDebug(
+                kind: "interaction_source",
+                values: [
+                    "sessionId": session.sessionId,
+                    "source": interaction.origin.rawValue,
+                    "toolUseId": interaction.toolUseId ?? "",
+                    "transportPreference": String(describing: interaction.transportPreference)
+                ]
+            )
             return
         }
 
         if let normalizedInteraction = session.normalizedInteraction {
             session.activeInteraction = normalizedInteraction
             session.pendingInteractionCount = 1
+            Self.appendInteractionDebug(
+                kind: "interaction_source",
+                values: [
+                    "sessionId": session.sessionId,
+                    "source": normalizedInteraction.origin.rawValue,
+                    "toolUseId": normalizedInteraction.toolUseId ?? "",
+                    "transportPreference": String(describing: normalizedInteraction.transportPreference)
+                ]
+            )
             return
         }
 
@@ -312,7 +365,151 @@ actor SessionStore {
             session.activeInteraction = nil
         }
 
+        if session.activeInteraction == nil,
+           ["codex", "gemini"].contains(session.agentId) {
+            let accessibilityText = AccessibilityOptionExtractor.shared.extractVisibleText(for: session)
+            session.activeInteraction = SessionInteractionRequest.fromAccessibilityEnrichedHook(
+                accessibilityText: accessibilityText,
+                hookMessage: session.conversationInfo.lastMessage,
+                sessionId: session.sessionId,
+                interactionId: "ax-\(session.sessionId)",
+                sourceAgent: session.agentId,
+                timestamp: session.lastActivity,
+                submitMode: submitMode
+            )
+        }
+
+        if let activeToolUseId = session.activeInteraction?.toolUseId,
+           (session.dismissedInteractionToolUseIds.contains(activeToolUseId)
+            || session.pendingSubmittedInteractionToolUseIds.contains(activeToolUseId)) {
+            session.activeInteraction = nil
+        }
+
         session.pendingInteractionCount = session.activeInteraction == nil ? 0 : 1
+        if let activeInteraction = session.activeInteraction {
+            Self.appendInteractionDebug(
+                kind: "interaction_source",
+                values: [
+                    "sessionId": session.sessionId,
+                    "source": activeInteraction.origin.rawValue,
+                    "toolUseId": activeInteraction.toolUseId ?? "",
+                    "transportPreference": String(describing: activeInteraction.transportPreference)
+                ]
+            )
+        } else {
+            Self.appendInteractionDebug(
+                kind: "interaction_source",
+                values: [
+                    "sessionId": session.sessionId,
+                    "source": "none"
+                ]
+            )
+        }
+    }
+
+    private func syncLiveInteractionHistory(for session: inout SessionState) {
+        let syntheticPrefix = "live-interaction-\(session.sessionId)-"
+        let activeSyntheticIds = Set(session.activeInteraction.map { ["\(syntheticPrefix)\($0.id)"] } ?? [])
+
+        session.chatItems.removeAll { item in
+            item.id.hasPrefix(syntheticPrefix) && !activeSyntheticIds.contains(item.id)
+        }
+
+        guard let interaction = session.activeInteraction else { return }
+
+        let detailItemId = "\(syntheticPrefix)\(interaction.id)"
+        let detailItem = ChatHistoryItem(
+            id: detailItemId,
+            type: .assistant(formattedInteractionSummary(interaction)),
+            timestamp: interaction.createdAt
+        )
+
+        if let idx = session.chatItems.firstIndex(where: { $0.id == detailItemId }) {
+            session.chatItems[idx] = detailItem
+        } else {
+            session.chatItems.append(detailItem)
+        }
+
+        guard let toolUseId = interaction.toolUseId else {
+            session.chatItems.sort { $0.timestamp < $1.timestamp }
+            return
+        }
+
+        let enrichedInput = enrichedInteractionInput(for: interaction)
+        if let idx = session.chatItems.firstIndex(where: { $0.id == toolUseId }),
+           case .toolCall(var tool) = session.chatItems[idx].type {
+            let mergedInput = tool.input.merging(enrichedInput) { _, new in new }
+            session.chatItems[idx] = ChatHistoryItem(
+                id: toolUseId,
+                type: .toolCall(ToolCallItem(
+                    name: tool.name,
+                    input: mergedInput,
+                    status: tool.status,
+                    result: tool.result,
+                    structuredResult: tool.structuredResult,
+                    subagentTools: tool.subagentTools
+                )),
+                timestamp: session.chatItems[idx].timestamp
+            )
+        } else {
+            let toolName = session.activePermission?.toolName
+                ?? (interaction.sourceAgent == "codex" ? "request_user_input" : "Interaction")
+            let status: ToolStatus = session.activePermission?.toolUseId == toolUseId ? .waitingForApproval : .running
+            session.chatItems.append(
+                ChatHistoryItem(
+                    id: toolUseId,
+                    type: .toolCall(ToolCallItem(
+                        name: toolName,
+                        input: enrichedInput,
+                        status: status,
+                        result: nil,
+                        structuredResult: nil,
+                        subagentTools: []
+                    )),
+                    timestamp: interaction.createdAt
+                )
+            )
+        }
+
+        session.chatItems.sort { $0.timestamp < $1.timestamp }
+    }
+
+    private func formattedInteractionSummary(_ interaction: SessionInteractionRequest) -> String {
+        var lines: [String] = []
+        lines.append(interaction.title)
+
+        for question in interaction.questions {
+            if let header = question.header, !header.isEmpty, header != interaction.title {
+                lines.append(header)
+            }
+            lines.append(question.question)
+            for (index, option) in question.options.enumerated() {
+                if let detail = option.detail, !detail.isEmpty {
+                    lines.append("\(index + 1). \(option.label) - \(detail)")
+                } else {
+                    lines.append("\(index + 1). \(option.label)")
+                }
+            }
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    private func enrichedInteractionInput(for interaction: SessionInteractionRequest) -> [String: String] {
+        var input: [String: String] = [:]
+        input["interaction_title"] = interaction.title
+        input["interaction_question"] = interaction.question
+        input["interaction_options"] = interaction.options.enumerated().map { index, option in
+            if let detail = option.detail, !detail.isEmpty {
+                return "\(index + 1). \(option.label) - \(detail)"
+            }
+            return "\(index + 1). \(option.label)"
+        }.joined(separator: "\n")
+        if let sourceToolInputJSON = interaction.sourceToolInputJSON {
+            input["source_tool_input_json"] = sourceToolInputJSON
+        }
+        input["interaction_origin"] = interaction.origin.rawValue
+        return input
     }
 
     private func processNormalizedInteraction(event: HookEvent, session: inout SessionState) {
@@ -328,13 +525,30 @@ actor SessionStore {
                     isInTmux: session.isInTmux,
                     tty: session.tty
                 )
+                // Use programmaticOnly so response goes back through hook socket
                 session.normalizedInteraction = SessionInteractionRequest.fromToolInputPayload(
                     sessionId: session.sessionId,
                     toolUseId: toolUseId,
                     payload: event.toolInput ?? [:],
                     timestamp: Date(),
                     sourceAgent: event.agentId,
-                    submitMode: submitMode
+                    submitMode: .programmatic,
+                    transportPreference: .programmaticOnly
+                )
+                let codexSessionId = session.sessionId
+                let hasInteraction = session.normalizedInteraction != nil
+                Self.logger.debug(
+                    "Codex interaction mapped from hook payload: session=\(codexSessionId, privacy: .public) toolUseId=\(toolUseId, privacy: .public) hasInteraction=\(hasInteraction, privacy: .public)"
+                )
+                Self.appendInteractionDebug(
+                    kind: "normalized_interaction_created",
+                    values: [
+                        "sessionId": codexSessionId,
+                        "toolUseId": toolUseId,
+                        "hasInteraction": hasInteraction,
+                        "tool": event.tool ?? "",
+                        "toolInput": event.toolInput?.mapValues(\.value) ?? [:]
+                    ]
                 )
 
             case HookEventType.postToolUse.rawValue:
@@ -375,6 +589,43 @@ actor SessionStore {
                 }
             case HookEventType.stop.rawValue:
                 session.normalizedInteraction = nil
+            default:
+                break
+            }
+            return
+        }
+
+        if event.agentId == "gemini" {
+            switch event.event {
+            case HookEventType.preToolUse.rawValue:
+                guard event.tool == "ask_user",
+                      let toolUseId = event.toolUseId else {
+                    return
+                }
+
+                // Use programmaticOnly so response goes back through hook socket
+                let payload = (event.toolInput ?? [:]).reduce(into: [String: Any]()) { partialResult, item in
+                    partialResult[item.key] = item.value.value
+                }
+                session.normalizedInteraction = SessionInteractionRequest.fromJSONObjectPayload(
+                    sessionId: session.sessionId,
+                    toolUseId: toolUseId,
+                    payload: payload,
+                    timestamp: Date(),
+                    sourceAgent: event.agentId,
+                    submitMode: .programmatic,
+                    transportPreference: .programmaticOnly
+                )
+
+            case HookEventType.postToolUse.rawValue, HookEventType.interactionResolved.rawValue:
+                guard let toolUseId = event.toolUseId else { return }
+                if session.normalizedInteraction?.toolUseId == toolUseId {
+                    session.normalizedInteraction = nil
+                }
+
+            case HookEventType.stop.rawValue:
+                session.normalizedInteraction = nil
+
             default:
                 break
             }
@@ -442,7 +693,8 @@ actor SessionStore {
     private func processToolTracking(event: HookEvent, session: inout SessionState) {
         switch event.event {
         case "PreToolUse":
-            if let toolUseId = event.toolUseId, let toolName = event.tool {
+            if let toolUseId = event.toolUseId, let rawToolName = event.tool {
+                let toolName = ExternalAgentToolSupport.normalizeToolName(agentId: event.agentId, rawName: rawToolName)
                 session.toolTracker.startTool(id: toolUseId, name: toolName)
 
                 // Skip creating top-level placeholder for subagent tools
@@ -454,18 +706,11 @@ actor SessionStore {
 
                 let toolExists = session.chatItems.contains { $0.id == toolUseId }
                 if !toolExists {
-                    var input: [String: String] = [:]
-                    if let hookInput = event.toolInput {
-                        for (key, value) in hookInput {
-                            if let str = value.value as? String {
-                                input[key] = str
-                            } else if let num = value.value as? Int {
-                                input[key] = String(num)
-                            } else if let bool = value.value as? Bool {
-                                input[key] = bool ? "true" : "false"
-                            }
-                        }
-                    }
+                    let input = ExternalAgentToolSupport.normalizeToolInput(
+                        agentId: event.agentId,
+                        rawName: rawToolName,
+                        input: serializeToolInput(event.toolInput)
+                    )
 
                     let placeholderItem = ChatHistoryItem(
                         id: toolUseId,
@@ -542,14 +787,41 @@ actor SessionStore {
         sessions[sessionId] = session
     }
 
-    private func processInteractionSubmitted(sessionId: String, toolUseId: String?) async {
+    private func processInteractionSubmitted(sessionId: String, toolUseId: String?, result: ToolCompletionResult?) async {
         guard var session = sessions[sessionId] else { return }
+
+        if let toolUseId {
+            session.pendingSubmittedInteractionToolUseIds.remove(toolUseId)
+        }
+
+        if let toolUseId,
+           let result {
+            session.dismissedInteractionToolUseIds.insert(toolUseId)
+            for i in 0..<session.chatItems.count {
+                guard session.chatItems[i].id == toolUseId,
+                      case .toolCall(var tool) = session.chatItems[i].type else {
+                    continue
+                }
+
+                tool.status = result.status
+                tool.result = result.result
+                tool.structuredResult = result.structuredResult
+                tool.resolvedFromToolUseId = toolUseId
+                session.chatItems[i] = ChatHistoryItem(
+                    id: toolUseId,
+                    type: .toolCall(tool),
+                    timestamp: session.chatItems[i].timestamp
+                )
+                break
+            }
+        }
 
         if toolUseId == nil || session.normalizedInteraction?.toolUseId == toolUseId {
             session.normalizedInteraction = nil
         }
 
         refreshInteractionState(for: &session)
+        syncLiveInteractionHistory(for: &session)
 
         if session.activePermission == nil,
            session.activeInteraction == nil,
@@ -557,6 +829,23 @@ actor SessionStore {
             session.phase = .processing
         }
 
+        sessions[sessionId] = session
+    }
+
+    private func processInteractionSubmissionPending(sessionId: String, toolUseId: String) async {
+        guard var session = sessions[sessionId] else { return }
+
+        session.pendingSubmittedInteractionToolUseIds.insert(toolUseId)
+        Self.appendInteractionDebug(
+            kind: "interaction_submission_pending",
+            values: [
+                "sessionId": sessionId,
+                "toolUseId": toolUseId
+            ]
+        )
+
+        refreshInteractionState(for: &session)
+        syncLiveInteractionHistory(for: &session)
         sessions[sessionId] = session
     }
 
@@ -627,6 +916,7 @@ actor SessionStore {
         }
 
         refreshInteractionState(for: &session)
+        syncLiveInteractionHistory(for: &session)
         sessions[sessionId] = session
     }
 
@@ -636,13 +926,19 @@ actor SessionStore {
     /// This is the authoritative handler for tool completions - ensures consistent state updates
     private func processToolCompleted(sessionId: String, toolUseId: String, result: ToolCompletionResult) async {
         guard var session = sessions[sessionId] else { return }
+        session.dismissedInteractionToolUseIds.remove(toolUseId)
+        session.pendingSubmittedInteractionToolUseIds.remove(toolUseId)
 
-        // Check if this tool is already completed (avoid duplicate processing)
+        // Skip only exact duplicates; allow authoritative file/history results to refine optimistic state.
         if let existingItem = session.chatItems.first(where: { $0.id == toolUseId }),
-           case .toolCall(let tool) = existingItem.type,
-           tool.status == .success || tool.status == .error || tool.status == .interrupted {
-            // Already completed, skip
-            return
+           case .toolCall(let tool) = existingItem.type {
+            let isCompleted = tool.status == .success || tool.status == .error || tool.status == .interrupted
+            if isCompleted,
+               tool.status == result.status,
+               tool.result == result.result,
+               tool.structuredResult == result.structuredResult {
+                return
+            }
         }
 
         // Update the tool status
@@ -682,6 +978,7 @@ actor SessionStore {
         }
 
         refreshInteractionState(for: &session)
+        syncLiveInteractionHistory(for: &session)
         sessions[sessionId] = session
     }
 
@@ -730,6 +1027,7 @@ actor SessionStore {
         }
 
         refreshInteractionState(for: &session)
+        syncLiveInteractionHistory(for: &session)
         sessions[sessionId] = session
     }
 
@@ -763,6 +1061,7 @@ actor SessionStore {
         }
 
         refreshInteractionState(for: &session)
+        syncLiveInteractionHistory(for: &session)
         sessions[sessionId] = session
     }
 
@@ -771,12 +1070,7 @@ actor SessionStore {
     private func processFileUpdate(_ payload: FileUpdatePayload) async {
         guard var session = sessions[payload.sessionId] else { return }
 
-        // Update conversationInfo from JSONL (summary, lastMessage, etc.)
-        let conversationInfo = await ConversationParser.shared.parse(
-            sessionId: payload.sessionId,
-            cwd: session.cwd
-        )
-        session.conversationInfo = conversationInfo
+        session.conversationInfo = payload.conversationInfo
 
         // Handle /clear reconciliation - remove items that no longer exist in parser state
         if session.needsClearReconciliation {
@@ -811,7 +1105,7 @@ actor SessionStore {
         }
 
         if payload.isIncremental {
-            let existingIds = Set(session.chatItems.map { $0.id })
+            var existingIds = Set(session.chatItems.map { $0.id })
 
             for message in payload.messages {
                 for (blockIndex, block) in message.content.enumerated() {
@@ -822,7 +1116,9 @@ actor SessionStore {
                                     id: tool.id,
                                     type: .toolCall(ToolCallItem(
                                         name: tool.name,
-                                        input: tool.input,
+                                        input: existingTool.input.merging(tool.input) { current, new in
+                                            new.isEmpty ? current : new
+                                        },
                                         status: existingTool.status,
                                         result: existingTool.result,
                                         structuredResult: existingTool.structuredResult,
@@ -848,11 +1144,12 @@ actor SessionStore {
 
                     if let item = item {
                         session.chatItems.append(item)
+                        existingIds.insert(item.id)
                     }
                 }
             }
         } else {
-            let existingIds = Set(session.chatItems.map { $0.id })
+            var existingIds = Set(session.chatItems.map { $0.id })
 
             for message in payload.messages {
                 for (blockIndex, block) in message.content.enumerated() {
@@ -863,7 +1160,9 @@ actor SessionStore {
                                     id: tool.id,
                                     type: .toolCall(ToolCallItem(
                                         name: tool.name,
-                                        input: tool.input,
+                                        input: existingTool.input.merging(tool.input) { current, new in
+                                            new.isEmpty ? current : new
+                                        },
                                         status: existingTool.status,
                                         result: existingTool.result,
                                         structuredResult: existingTool.structuredResult,
@@ -889,6 +1188,7 @@ actor SessionStore {
 
                     if let item = item {
                         session.chatItems.append(item)
+                        existingIds.insert(item.id)
                     }
                 }
             }
@@ -905,6 +1205,7 @@ actor SessionStore {
         )
 
         refreshInteractionState(for: &session)
+        syncLiveInteractionHistory(for: &session)
 
         sessions[payload.sessionId] = session
 
@@ -976,15 +1277,20 @@ actor SessionStore {
     ) async {
         for item in session.chatItems {
             guard case .toolCall(let tool) = item.type else { continue }
-
-            // Only emit for tools that are running or waiting but have results in JSONL
-            guard tool.status == .running || tool.status == .waitingForApproval else { continue }
             guard completedToolIds.contains(item.id) else { continue }
 
             let result = ToolCompletionResult.from(
                 parserResult: toolResults[item.id],
                 structuredResult: structuredResults[item.id]
             )
+
+            let needsUpdate =
+                tool.status == .running ||
+                tool.status == .waitingForApproval ||
+                tool.status != result.status ||
+                tool.result != result.result ||
+                tool.structuredResult != result.structuredResult
+            guard needsUpdate else { continue }
 
             // Process the completion event (this will update state and phase consistently)
             await process(.toolCompleted(sessionId: sessionId, toolUseId: item.id, result: result))
@@ -1054,6 +1360,39 @@ actor SessionStore {
             guard !existingIds.contains(itemId) else { return nil }
             return ChatHistoryItem(id: itemId, type: .interrupted, timestamp: message.timestamp)
         }
+    }
+
+    private func serializeToolInput(_ hookInput: [String: AnyCodable]?) -> [String: String] {
+        var input: [String: String] = [:]
+        guard let hookInput else { return input }
+
+        for (key, value) in hookInput {
+            if let str = value.value as? String {
+                input[key] = str
+            } else if let num = value.value as? Int {
+                input[key] = String(num)
+            } else if let num = value.value as? Double {
+                input[key] = String(num)
+            } else if let bool = value.value as? Bool {
+                input[key] = bool ? "true" : "false"
+            } else if JSONSerialization.isValidJSONObject(value.value),
+                      let data = try? JSONSerialization.data(withJSONObject: value.value, options: [.fragmentsAllowed]),
+                      let json = String(data: data, encoding: .utf8) {
+                input[key] = json
+            }
+        }
+
+        if let cmd = input["cmd"], input["command"] == nil {
+            input["command"] = cmd
+        }
+        if let workdir = input["workdir"], input["cwd"] == nil {
+            input["cwd"] = workdir
+        }
+        if let path = input["path"], input["file_path"] == nil {
+            input["file_path"] = path
+        }
+
+        return input
     }
 
     private func updateToolStatus(in session: inout SessionState, toolId: String, status: ToolStatus) {
@@ -1136,27 +1475,25 @@ actor SessionStore {
         if let session = sessions[sessionId] {
             switch session.agentId {
             case "codex":
-                let messages = CodexAgent().parseFullConversation(sessionId: sessionId, cwd: cwd)
-                let conversationInfo = CodexAgent().parseConversation(sessionId: sessionId, cwd: cwd) ?? session.conversationInfo
+                let history = CodexAgent().parseHistory(sessionId: sessionId, cwd: cwd)
                 await process(.historyLoaded(
                     sessionId: sessionId,
-                    messages: messages,
-                    completedTools: [],
-                    toolResults: [:],
-                    structuredResults: [:],
-                    conversationInfo: conversationInfo
+                    messages: history.messages,
+                    completedTools: history.completedToolIds,
+                    toolResults: history.toolResults,
+                    structuredResults: history.structuredResults,
+                    conversationInfo: history.conversationInfo
                 ))
                 return
             case "gemini":
-                let messages = GeminiCLIAgent().parseFullConversation(sessionId: sessionId, cwd: cwd)
-                let conversationInfo = GeminiCLIAgent().parseConversation(sessionId: sessionId, cwd: cwd) ?? session.conversationInfo
+                let history = GeminiCLIAgent().parseHistory(sessionId: sessionId, cwd: cwd)
                 await process(.historyLoaded(
                     sessionId: sessionId,
-                    messages: messages,
-                    completedTools: [],
-                    toolResults: [:],
-                    structuredResults: [:],
-                    conversationInfo: conversationInfo
+                    messages: history.messages,
+                    completedTools: history.completedToolIds,
+                    toolResults: history.toolResults,
+                    structuredResults: history.structuredResults,
+                    conversationInfo: history.conversationInfo
                 ))
                 return
             default:
@@ -1204,7 +1541,7 @@ actor SessionStore {
         session.conversationInfo = conversationInfo
 
         // Convert messages to chat items
-        let existingIds = Set(session.chatItems.map { $0.id })
+        var existingIds = Set(session.chatItems.map { $0.id })
 
         for message in messages {
             for (blockIndex, block) in message.content.enumerated() {
@@ -1221,6 +1558,7 @@ actor SessionStore {
 
                 if let item = item {
                     session.chatItems.append(item)
+                    existingIds.insert(item.id)
                 }
             }
         }
@@ -1228,13 +1566,14 @@ actor SessionStore {
         // Sort by timestamp
         session.chatItems.sort { $0.timestamp < $1.timestamp }
         refreshInteractionState(for: &session)
+        syncLiveInteractionHistory(for: &session)
 
         sessions[sessionId] = session
     }
 
     // MARK: - File Sync Scheduling
 
-    private func scheduleFileSync(sessionId: String, cwd: String) {
+    private func scheduleFileSync(sessionId: String, cwd: String, agentId: String) {
         // Cancel existing sync
         cancelPendingSync(sessionId: sessionId)
 
@@ -1243,31 +1582,69 @@ actor SessionStore {
             try? await Task.sleep(nanoseconds: syncDebounceNs)
             guard !Task.isCancelled else { return }
 
-            // Parse incrementally - only get NEW messages since last call
-            let result = await ConversationParser.shared.parseIncremental(
-                sessionId: sessionId,
-                cwd: cwd
-            )
+            switch agentId {
+            case "codex":
+                let history = CodexAgent().parseHistory(sessionId: sessionId, cwd: cwd)
+                guard !history.messages.isEmpty || !history.completedToolIds.isEmpty else { return }
+                let payload = FileUpdatePayload(
+                    sessionId: sessionId,
+                    cwd: cwd,
+                    messages: history.messages,
+                    isIncremental: false,
+                    completedToolIds: history.completedToolIds,
+                    toolResults: history.toolResults,
+                    structuredResults: history.structuredResults,
+                    conversationInfo: history.conversationInfo
+                )
+                await self?.process(.fileUpdated(payload))
 
-            if result.clearDetected {
-                await self?.process(.clearDetected(sessionId: sessionId))
+            case "gemini":
+                let history = GeminiCLIAgent().parseHistory(sessionId: sessionId, cwd: cwd)
+                guard !history.messages.isEmpty || !history.completedToolIds.isEmpty else { return }
+                let payload = FileUpdatePayload(
+                    sessionId: sessionId,
+                    cwd: cwd,
+                    messages: history.messages,
+                    isIncremental: false,
+                    completedToolIds: history.completedToolIds,
+                    toolResults: history.toolResults,
+                    structuredResults: history.structuredResults,
+                    conversationInfo: history.conversationInfo
+                )
+                await self?.process(.fileUpdated(payload))
+
+            default:
+                let result = await ConversationParser.shared.parseIncremental(
+                    sessionId: sessionId,
+                    cwd: cwd
+                )
+
+                if result.clearDetected {
+                    await self?.process(.clearDetected(sessionId: sessionId))
+                }
+
+                guard !result.newMessages.isEmpty || result.clearDetected else {
+                    return
+                }
+
+                let conversationInfo = await ConversationParser.shared.parse(
+                    sessionId: sessionId,
+                    cwd: cwd
+                )
+
+                let payload = FileUpdatePayload(
+                    sessionId: sessionId,
+                    cwd: cwd,
+                    messages: result.newMessages,
+                    isIncremental: !result.clearDetected,
+                    completedToolIds: result.completedToolIds,
+                    toolResults: result.toolResults,
+                    structuredResults: result.structuredResults,
+                    conversationInfo: conversationInfo
+                )
+
+                await self?.process(.fileUpdated(payload))
             }
-
-            guard !result.newMessages.isEmpty || result.clearDetected else {
-                return
-            }
-
-            let payload = FileUpdatePayload(
-                sessionId: sessionId,
-                cwd: cwd,
-                messages: result.newMessages,
-                isIncremental: !result.clearDetected,
-                completedToolIds: result.completedToolIds,
-                toolResults: result.toolResults,
-                structuredResults: result.structuredResults
-            )
-
-            await self?.process(.fileUpdated(payload))
         }
     }
 

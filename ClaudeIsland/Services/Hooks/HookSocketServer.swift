@@ -117,7 +117,17 @@ struct HookEvent: Codable, Sendable {
         if agentId == "claude" && event == "PreToolUse" && tool == "AskUserQuestion" {
             return true
         }
-        return agentId == "codex" && event == "PreToolUse" && status == "waiting_for_approval"
+        if agentId == "codex" && event == "PreToolUse" && status == "waiting_for_approval" {
+            return true
+        }
+        // Keep socket open for Codex request_user_input and Gemini ask_user interactions
+        if agentId == "codex" && event == "PreToolUse" && tool == "request_user_input" {
+            return true
+        }
+        if agentId == "gemini" && event == "PreToolUse" && tool == "ask_user" {
+            return true
+        }
+        return false
     }
 
     nonisolated var responseKind: HookResponseKind {
@@ -129,6 +139,13 @@ struct HookEvent: Codable, Sendable {
         }
         if agentId == "codex" && event == "PreToolUse" && status == "waiting_for_approval" {
             return .permission
+        }
+        // Codex request_user_input and Gemini ask_user are user-facing interaction prompts
+        if agentId == "codex" && event == "PreToolUse" && tool == "request_user_input" {
+            return .interaction
+        }
+        if agentId == "gemini" && event == "PreToolUse" && tool == "ask_user" {
+            return .interaction
         }
         return .none
     }
@@ -158,6 +175,34 @@ struct PendingPermission: Sendable {
     let receivedAt: Date
 }
 
+struct PendingInteraction: Sendable {
+    let sessionId: String
+    let toolUseId: String
+    let clientSocket: Int32
+    let event: HookEvent
+    let receivedAt: Date
+}
+
+enum InteractionResponseWriteResult: Equatable, Sendable {
+    case success
+    case missingPendingInteraction
+    case encodingFailed
+    case writeFailed(errno: Int32)
+
+    var errorDescription: String? {
+        switch self {
+        case .success:
+            return nil
+        case .missingPendingInteraction:
+            return "No pending interaction socket matched this tool_use_id"
+        case .encodingFailed:
+            return "Failed to encode interaction response for hook socket"
+        case .writeFailed(let errno):
+            return "Failed to write interaction response to hook socket (errno \(errno))"
+        }
+    }
+}
+
 /// Callback for hook events
 typealias HookEventHandler = @Sendable (HookEvent) -> Void
 
@@ -179,6 +224,10 @@ class HookSocketServer {
     /// Pending permission requests indexed by toolUseId
     private var pendingPermissions: [String: PendingPermission] = [:]
     private let permissionsLock = NSLock()
+
+    /// Pending interaction requests indexed by toolUseId
+    private var pendingInteractions: [String: PendingInteraction] = [:]
+    private let interactionsLock = NSLock()
 
     /// Cache tool_use_id from PreToolUse to correlate with PermissionRequest
     /// Key: "sessionId:toolName:serializedInput" -> Queue of tool_use_ids (FIFO)
@@ -271,6 +320,13 @@ class HookSocketServer {
         }
         pendingPermissions.removeAll()
         permissionsLock.unlock()
+
+        interactionsLock.lock()
+        for (_, pending) in pendingInteractions {
+            close(pending.clientSocket)
+        }
+        pendingInteractions.removeAll()
+        interactionsLock.unlock()
     }
 
     /// Respond to a pending permission request by toolUseId
@@ -280,17 +336,20 @@ class HookSocketServer {
         }
     }
 
-    func respondToInteraction(toolUseId: String, updatedInput: [String: Any]) {
-        queue.async { [weak self] in
-            self?.sendHookResponse(
-                toolUseId: toolUseId,
-                response: HookResponse(
-                    decision: nil,
-                    reason: nil,
-                    updatedInput: AnyCodable(updatedInput)
-                ),
-                summary: "interaction"
-            )
+    func respondToInteraction(toolUseId: String, updatedInput: [String: Any]) async -> InteractionResponseWriteResult {
+        await withCheckedContinuation { continuation in
+            queue.async { [weak self] in
+                guard let self else {
+                    continuation.resume(returning: .missingPendingInteraction)
+                    return
+                }
+                continuation.resume(
+                    returning: self.sendInteractionResponse(
+                        toolUseId: toolUseId,
+                        updatedInput: updatedInput
+                    )
+                )
+            }
         }
     }
 
@@ -355,6 +414,17 @@ class HookSocketServer {
         permissionsLock.unlock()
     }
 
+    private func cleanupPendingInteractions(sessionId: String) {
+        interactionsLock.lock()
+        let matching = pendingInteractions.filter { $0.value.sessionId == sessionId }
+        for (toolUseId, pending) in matching {
+            logger.debug("Cleaning up stale interaction for \(sessionId.prefix(8), privacy: .public) tool:\(toolUseId.prefix(12), privacy: .public)")
+            close(pending.clientSocket)
+            pendingInteractions.removeValue(forKey: toolUseId)
+        }
+        interactionsLock.unlock()
+    }
+
     // MARK: - Tool Use ID Cache
 
     /// Encoder with sorted keys for deterministic cache keys
@@ -393,27 +463,45 @@ class HookSocketServer {
         logger.debug("Cached tool_use_id for \(event.sessionId.prefix(8), privacy: .public) tool:\(event.tool ?? "?", privacy: .public) id:\(toolUseId.prefix(12), privacy: .public)")
     }
 
-    /// Pop and return cached tool_use_id for PermissionRequest (FIFO)
-    private func popCachedToolUseId(event: HookEvent) -> String? {
+    /// Peek cached tool_use_id without removing it.
+    private func peekCachedToolUseId(event: HookEvent) -> String? {
+        let key = cacheKey(sessionId: event.sessionId, toolName: event.tool, toolInput: event.toolInput)
+
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+
+        guard let queue = toolUseIdCache[key], !queue.isEmpty else {
+            return nil
+        }
+
+        let toolUseId = queue[0]
+        logger.debug("Peeked cached tool_use_id for \(event.sessionId.prefix(8), privacy: .public) tool:\(event.tool ?? "?", privacy: .public) id:\(toolUseId.prefix(12), privacy: .public)")
+        return toolUseId
+    }
+
+    /// Remove one cached tool_use_id for the given event key.
+    private func consumeCachedToolUseId(event: HookEvent, preferredToolUseId: String? = nil) {
         let key = cacheKey(sessionId: event.sessionId, toolName: event.tool, toolInput: event.toolInput)
 
         cacheLock.lock()
         defer { cacheLock.unlock() }
 
         guard var queue = toolUseIdCache[key], !queue.isEmpty else {
-            return nil
+            return
         }
 
-        let toolUseId = queue.removeFirst()
+        if let preferredToolUseId,
+           let index = queue.firstIndex(of: preferredToolUseId) {
+            queue.remove(at: index)
+        } else {
+            queue.removeFirst()
+        }
 
         if queue.isEmpty {
             toolUseIdCache.removeValue(forKey: key)
         } else {
             toolUseIdCache[key] = queue
         }
-
-        logger.debug("Retrieved cached tool_use_id for \(event.sessionId.prefix(8), privacy: .public) tool:\(event.tool ?? "?", privacy: .public) id:\(toolUseId.prefix(12), privacy: .public)")
-        return toolUseId
     }
 
     /// Clean up cache entries for a session (on session end)
@@ -494,49 +582,100 @@ class HookSocketServer {
 
         if event.event == "SessionEnd" {
             cleanupCache(sessionId: event.sessionId)
+            cleanupPendingInteractions(sessionId: event.sessionId)
         }
 
-        if event.expectsResponse {
-            let toolUseId: String
-            if let eventToolUseId = event.toolUseId {
-                toolUseId = eventToolUseId
-            } else if let cachedToolUseId = popCachedToolUseId(event: event) {
-                toolUseId = cachedToolUseId
-            } else {
-                // Generate a synthetic tool_use_id so we can still track and respond
-                let synthetic = "\(event.sessionId)-\(event.tool ?? "unknown")-\(Int(Date().timeIntervalSince1970))"
-                logger.warning("Permission request missing tool_use_id for \(event.sessionId.prefix(8), privacy: .public) - using synthetic: \(synthetic.prefix(20), privacy: .public)")
-                toolUseId = synthetic
-            }
-
-            logger.debug("Permission request - keeping socket open for \(event.sessionId.prefix(8), privacy: .public) tool:\(toolUseId.prefix(12), privacy: .public)")
-
-        let updatedEvent = HookEvent(
-            sessionId: event.sessionId,
-            cwd: event.cwd,
-            event: event.event,
-            status: event.status,
+        var eventToDispatch = event
+        if event.event == "PostToolUse", event.toolUseId == nil,
+           let cachedToolUseId = peekCachedToolUseId(event: event) {
+            eventToDispatch = HookEvent(
+                sessionId: event.sessionId,
+                cwd: event.cwd,
+                event: event.event,
+                status: event.status,
                 pid: event.pid,
                 tty: event.tty,
                 tool: event.tool,
                 toolInput: event.toolInput,
-            toolUseId: toolUseId,  // Use resolved toolUseId
-            notificationType: event.notificationType,
-            message: event.message,
-            agentId: event.agentId,
-            rawPayload: event.rawPayload
-        )
-
-            let pending = PendingPermission(
-                sessionId: event.sessionId,
-                toolUseId: toolUseId,
-                clientSocket: clientSocket,
-                event: updatedEvent,
-                receivedAt: Date()
+                toolUseId: cachedToolUseId,
+                notificationType: event.notificationType,
+                message: event.message,
+                agentId: event.agentId,
+                rawPayload: event.rawPayload
             )
-            permissionsLock.lock()
-            pendingPermissions[toolUseId] = pending
-            permissionsLock.unlock()
+            consumeCachedToolUseId(event: event, preferredToolUseId: cachedToolUseId)
+        } else if event.event == "PostToolUse", let eventToolUseId = event.toolUseId {
+            consumeCachedToolUseId(event: event, preferredToolUseId: eventToolUseId)
+        }
+
+        if eventToDispatch.expectsResponse {
+            let toolUseId: String
+            if let eventToolUseId = eventToDispatch.toolUseId {
+                toolUseId = eventToolUseId
+            } else if let cachedToolUseId = peekCachedToolUseId(event: eventToDispatch) {
+                toolUseId = cachedToolUseId
+            } else {
+                // Generate a synthetic tool_use_id so we can still track and respond
+                let synthetic = "\(eventToDispatch.sessionId)-\(eventToDispatch.tool ?? "unknown")-\(Int(Date().timeIntervalSince1970))"
+                logger.warning("Permission request missing tool_use_id for \(eventToDispatch.sessionId.prefix(8), privacy: .public) - using synthetic: \(synthetic.prefix(20), privacy: .public)")
+                toolUseId = synthetic
+            }
+
+            logger.debug("Permission request - keeping socket open for \(eventToDispatch.sessionId.prefix(8), privacy: .public) tool:\(toolUseId.prefix(12), privacy: .public)")
+
+            let updatedEvent = HookEvent(
+                sessionId: eventToDispatch.sessionId,
+                cwd: eventToDispatch.cwd,
+                event: eventToDispatch.event,
+                status: eventToDispatch.status,
+                pid: eventToDispatch.pid,
+                tty: eventToDispatch.tty,
+                tool: eventToDispatch.tool,
+                toolInput: eventToDispatch.toolInput,
+                toolUseId: toolUseId,
+                notificationType: eventToDispatch.notificationType,
+                message: eventToDispatch.message,
+                agentId: eventToDispatch.agentId,
+                rawPayload: eventToDispatch.rawPayload
+            )
+
+            switch updatedEvent.responseKind {
+            case .permission:
+                let pending = PendingPermission(
+                    sessionId: eventToDispatch.sessionId,
+                    toolUseId: toolUseId,
+                    clientSocket: clientSocket,
+                    event: updatedEvent,
+                    receivedAt: Date()
+                )
+                permissionsLock.lock()
+                pendingPermissions[toolUseId] = pending
+                permissionsLock.unlock()
+            case .interaction:
+                let pending = PendingInteraction(
+                    sessionId: eventToDispatch.sessionId,
+                    toolUseId: toolUseId,
+                    clientSocket: clientSocket,
+                    event: updatedEvent,
+                    receivedAt: Date()
+                )
+                interactionsLock.lock()
+                pendingInteractions[toolUseId] = pending
+                interactionsLock.unlock()
+                logInteractionDebug(
+                    kind: "pending",
+                    values: [
+                        "sessionId": eventToDispatch.sessionId,
+                        "toolUseId": toolUseId,
+                        "agentId": eventToDispatch.agentId,
+                        "tool": eventToDispatch.tool ?? "",
+                        "status": eventToDispatch.status,
+                        "rawPayload": eventToDispatch.rawPayload?.mapValues(\.value) ?? [:]
+                    ]
+                )
+            case .none:
+                break
+            }
 
             eventHandler?(updatedEvent)
             return
@@ -544,7 +683,7 @@ class HookSocketServer {
             close(clientSocket)
         }
 
-        eventHandler?(event)
+        eventHandler?(eventToDispatch)
     }
 
     private func sendPermissionResponse(toolUseId: String, decision: String, reason: String?) {
@@ -586,6 +725,81 @@ class HookSocketServer {
         }
 
         close(pending.clientSocket)
+    }
+
+    private func sendInteractionResponse(toolUseId: String, updatedInput: [String: Any]) -> InteractionResponseWriteResult {
+        interactionsLock.lock()
+        guard let pending = pendingInteractions.removeValue(forKey: toolUseId) else {
+            interactionsLock.unlock()
+            logger.debug("No pending interaction for toolUseId: \(toolUseId.prefix(12), privacy: .public)")
+            logInteractionDebug(
+                kind: "write-miss",
+                values: ["toolUseId": toolUseId]
+            )
+            return .missingPendingInteraction
+        }
+        interactionsLock.unlock()
+
+        let response = HookResponse(
+            decision: nil,
+            reason: nil,
+            updatedInput: AnyCodable(updatedInput)
+        )
+        guard let data = try? JSONEncoder().encode(response) else {
+            close(pending.clientSocket)
+            logInteractionDebug(
+                kind: "write-encode-failed",
+                values: [
+                    "sessionId": pending.sessionId,
+                    "toolUseId": toolUseId,
+                    "updatedInput": updatedInput
+                ]
+            )
+            return .encodingFailed
+        }
+
+        let age = Date().timeIntervalSince(pending.receivedAt)
+        logger.info("Sending response: interaction for \(pending.sessionId.prefix(8), privacy: .public) tool:\(toolUseId.prefix(12), privacy: .public) (age: \(String(format: "%.1f", age), privacy: .public)s)")
+
+        var writeErrno: Int32?
+        data.withUnsafeBytes { bytes in
+            guard let baseAddress = bytes.baseAddress else {
+                writeErrno = EINVAL
+                return
+            }
+            let result = write(pending.clientSocket, baseAddress, data.count)
+            if result < 0 {
+                writeErrno = errno
+                logger.error("Interaction write failed with errno: \(errno)")
+            } else {
+                logger.debug("Interaction write succeeded: \(result) bytes")
+            }
+        }
+
+        close(pending.clientSocket)
+
+        if let writeErrno {
+            logInteractionDebug(
+                kind: "write-failed",
+                values: [
+                    "sessionId": pending.sessionId,
+                    "toolUseId": toolUseId,
+                    "errno": Int(writeErrno),
+                    "updatedInput": updatedInput
+                ]
+            )
+            return .writeFailed(errno: writeErrno)
+        }
+
+        logInteractionDebug(
+            kind: "write-succeeded",
+            values: [
+                "sessionId": pending.sessionId,
+                "toolUseId": toolUseId,
+                "updatedInput": updatedInput
+            ]
+        )
+        return .success
     }
 
     private func sendPermissionResponseBySession(sessionId: String, decision: String, reason: String?) {
@@ -633,6 +847,37 @@ class HookSocketServer {
 
         if !writeSuccess {
             permissionFailureHandler?(sessionId, pending.toolUseId)
+        }
+    }
+
+    private func logInteractionDebug(kind: String, values: [String: Any]) {
+        let path = Foundation.ProcessInfo.processInfo.environment["CLAUDE_ISLAND_INTERACTION_LOG_PATH"]
+            ?? "/tmp/claude-island-interactions.log"
+        var payload = values
+        payload["kind"] = kind
+        payload["timestamp"] = ISO8601DateFormatter().string(from: Date())
+        guard JSONSerialization.isValidJSONObject(payload),
+              let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+              let line = String(data: data, encoding: .utf8) else {
+            return
+        }
+
+        let fileManager = FileManager.default
+        if !fileManager.fileExists(atPath: path) {
+            fileManager.createFile(atPath: path, contents: nil)
+        }
+
+        guard let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: path)) else {
+            return
+        }
+        defer { try? handle.close() }
+        do {
+            try handle.seekToEnd()
+            if let lineData = "\(line)\n".data(using: .utf8) {
+                try handle.write(contentsOf: lineData)
+            }
+        } catch {
+            logger.error("Failed to append interaction debug log: \(error.localizedDescription, privacy: .public)")
         }
     }
 }

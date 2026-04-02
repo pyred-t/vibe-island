@@ -64,6 +64,10 @@ class ChatHistoryManager: ObservableObject {
         let completedTools = await ConversationParser.shared.completedToolIds(for: sessionId)
         let toolResults = await ConversationParser.shared.toolResults(for: sessionId)
         let structuredResults = await ConversationParser.shared.structuredResults(for: sessionId)
+        let conversationInfo = await ConversationParser.shared.parse(
+            sessionId: sessionId,
+            cwd: cwd
+        )
 
         let payload = FileUpdatePayload(
             sessionId: sessionId,
@@ -72,7 +76,8 @@ class ChatHistoryManager: ObservableObject {
             isIncremental: false,  // Full sync
             completedToolIds: completedTools,
             toolResults: toolResults,
-            structuredResults: structuredResults
+            structuredResults: structuredResults,
+            conversationInfo: conversationInfo
         )
 
         await SessionStore.shared.process(.fileUpdated(payload))
@@ -145,6 +150,7 @@ struct ToolCallItem: Equatable, Sendable {
     var status: ToolStatus
     var result: String?
     var structuredResult: ToolResultData?
+    var resolvedFromToolUseId: String? = nil
 
     /// For Task tools: nested subagent tool calls
     var subagentTools: [SubagentToolCall]
@@ -195,6 +201,7 @@ struct ToolCallItem: Equatable, Sendable {
         lhs.status == rhs.status &&
         lhs.result == rhs.result &&
         lhs.structuredResult == rhs.structuredResult &&
+        lhs.resolvedFromToolUseId == rhs.resolvedFromToolUseId &&
         lhs.subagentTools == rhs.subagentTools
     }
 }

@@ -216,9 +216,24 @@ enum ToolEventProcessor {
                 input[key] = str
             } else if let num = value.value as? Int {
                 input[key] = String(num)
+            } else if let num = value.value as? Double {
+                input[key] = String(num)
             } else if let bool = value.value as? Bool {
                 input[key] = bool ? "true" : "false"
+            } else if JSONSerialization.isValidJSONObject(value.value),
+                      let data = try? JSONSerialization.data(withJSONObject: value.value, options: [.fragmentsAllowed]),
+                      let json = String(data: data, encoding: .utf8) {
+                input[key] = json
             }
+        }
+        if let cmd = input["cmd"], input["command"] == nil {
+            input["command"] = cmd
+        }
+        if let workdir = input["workdir"], input["cwd"] == nil {
+            input["cwd"] = workdir
+        }
+        if let path = input["path"], input["file_path"] == nil {
+            input["file_path"] = path
         }
         return input
     }

@@ -217,10 +217,11 @@ class NotchViewModel: ObservableObject {
             guard let screen = NSScreen.main else { return }
             let screenHeight = screen.frame.height
             let cgPoint = CGPoint(x: location.x, y: screenHeight - location.y)
+            let source = CGEventSource(stateID: .hidSystemState)
 
             // Create and post mouse down event
             if let mouseDown = CGEvent(
-                mouseEventSource: nil,
+                mouseEventSource: source,
                 mouseType: .leftMouseDown,
                 mouseCursorPosition: cgPoint,
                 mouseButton: .left
@@ -230,7 +231,7 @@ class NotchViewModel: ObservableObject {
 
             // Create and post mouse up event
             if let mouseUp = CGEvent(
-                mouseEventSource: nil,
+                mouseEventSource: source,
                 mouseType: .leftMouseUp,
                 mouseCursorPosition: cgPoint,
                 mouseButton: .left

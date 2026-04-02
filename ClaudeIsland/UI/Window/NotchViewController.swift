@@ -14,8 +14,10 @@ class PassThroughHostingView<Content: View>: NSHostingView<Content> {
     var hitTestRect: () -> CGRect = { .zero }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
+        let localRect = hitTestRect()
+        print("PassThroughHostingView.hitTest point=\(point) localRect=\(localRect)")
         // Only accept hits within the panel rect
-        guard hitTestRect().contains(point) else {
+        guard localRect.contains(point) else {
             return nil  // Pass through to windows behind
         }
         return super.hitTest(point)
@@ -44,19 +46,17 @@ class NotchViewController: NSViewController {
             let vm = self.viewModel
             let geometry = vm.geometry
 
-            // Window coordinates: origin at bottom-left, Y increases upward
-            // The window is positioned at top of screen, so panel is at top of window
+            // Window-local coordinates: origin at bottom-left, Y increases upward.
             let windowHeight = geometry.windowHeight
+            let windowWidth = geometry.screenRect.width
 
             switch vm.status {
             case .opened:
                 let panelSize = vm.openedSize
-                // Panel is centered horizontally, anchored to top
                 let panelWidth = panelSize.width + 52  // Account for corner radius padding
                 let panelHeight = panelSize.height
-                let screenWidth = geometry.screenRect.width
                 return CGRect(
-                    x: (screenWidth - panelWidth) / 2,
+                    x: (windowWidth - panelWidth) / 2,
                     y: windowHeight - panelHeight,
                     width: panelWidth,
                     height: panelHeight
@@ -66,9 +66,8 @@ class NotchViewController: NSViewController {
                     let panelSize = vm.interactionPopSize
                     let panelWidth = panelSize.width + 52
                     let panelHeight = panelSize.height + 24
-                    let screenWidth = geometry.screenRect.width
                     return CGRect(
-                        x: (screenWidth - panelWidth) / 2,
+                        x: (windowWidth - panelWidth) / 2,
                         y: windowHeight - panelHeight - 8,
                         width: panelWidth,
                         height: panelHeight
@@ -79,10 +78,9 @@ class NotchViewController: NSViewController {
             case .closed:
                 // When closed, use the notch rect
                 let notchRect = geometry.deviceNotchRect
-                let screenWidth = geometry.screenRect.width
                 // Add some padding for easier interaction
                 return CGRect(
-                    x: (screenWidth - notchRect.width) / 2 - 10,
+                    x: (windowWidth - notchRect.width) / 2 - 10,
                     y: windowHeight - notchRect.height - 5,
                     width: notchRect.width + 20,
                     height: notchRect.height + 10

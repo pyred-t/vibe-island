@@ -74,65 +74,140 @@ struct CodexAgent: AIAgent {
     }
 
     func parseFullConversation(sessionId: String, cwd: String) -> [ChatMessage] {
+        parseHistory(sessionId: sessionId, cwd: cwd).messages
+    }
+
+    func parseHistory(sessionId: String, cwd: String) -> AgentHistorySnapshot {
         guard let conversation = resolveConversation(sessionId: sessionId, cwd: cwd),
               let data = FileManager.default.contents(atPath: conversation.rolloutPath),
               let content = String(data: data, encoding: .utf8) else {
-            return []
+            return AgentHistorySnapshot(
+                messages: [],
+                completedToolIds: [],
+                toolResults: [:],
+                structuredResults: [:],
+                conversationInfo: ConversationInfo(
+                    summary: nil,
+                    lastMessage: nil,
+                    lastMessageRole: nil,
+                    lastToolName: nil,
+                    firstUserMessage: nil,
+                    lastUserMessage: nil,
+                    lastUserMessageDate: nil
+                )
+            )
         }
 
-        let lines = content.components(separatedBy: .newlines).filter { !$0.isEmpty }
+        let entries = content.components(separatedBy: .newlines)
+            .filter { !$0.isEmpty }
+            .compactMap { line -> [String: Any]? in
+                guard let data = line.data(using: .utf8) else { return nil }
+                return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         var messages: [ChatMessage] = []
+        var completedToolIds: Set<String> = []
+        var toolResults: [String: ConversationParser.ToolResult] = [:]
+        var structuredResults: [String: ToolResultData] = [:]
+        var toolInputsById: [String: [String: String]] = [:]
+        var rawToolNamesById: [String: String] = [:]
 
-        for (index, line) in lines.enumerated() {
-            guard let data = line.data(using: .utf8),
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let type = json["type"] as? String else {
+        for (index, json) in entries.enumerated() {
+            guard let type = json["type"] as? String else {
                 continue
             }
 
             let timestamp = (json["timestamp"] as? String).flatMap { formatter.date(from: $0) } ?? conversation.updatedAt
 
-            if type == "response_item",
-               let payload = json["payload"] as? [String: Any],
-               payload["type"] as? String == "message",
-               let role = payload["role"] as? String,
-               let messageText = extractMessageText(from: payload["content"]),
-               !messageText.isEmpty {
-                let chatRole: ChatRole = role == "user" ? .user : .assistant
+            if shouldSkipVisibleMessage(at: index, in: entries) {
+                continue
+            }
+
+            if let message = parseVisibleMessage(from: json),
+               !message.text.isEmpty {
                 messages.append(
                     ChatMessage(
                         id: "codex-\(index)",
-                        role: chatRole,
+                        role: message.role,
                         timestamp: timestamp,
-                        content: [.text(messageText)]
+                        content: [.text(message.text)]
                     )
                 )
                 continue
             }
 
-            if type == "event_msg",
+            if type == "response_item",
                let payload = json["payload"] as? [String: Any],
-               payload["type"] as? String == "agent_message",
-               let messageText = payload["message"] as? String,
-               !messageText.isEmpty {
+               payload["type"] as? String == "function_call",
+               let rawToolName = payload["name"] as? String,
+               let callId = payload["call_id"] as? String {
+                let parsedInput = parseToolInput(from: payload["arguments"])
+                let toolInput = ExternalAgentToolSupport.normalizeToolInput(
+                    agentId: id,
+                    rawName: rawToolName,
+                    input: parsedInput
+                )
+                let toolName = ExternalAgentToolSupport.normalizeToolName(agentId: id, rawName: rawToolName)
+                toolInputsById[callId] = toolInput
+                rawToolNamesById[callId] = rawToolName
                 messages.append(
                     ChatMessage(
-                        id: "codex-commentary-\(index)",
+                        id: "codex-tool-\(index)",
                         role: .assistant,
                         timestamp: timestamp,
-                        content: [.text(messageText)]
+                        content: [
+                            .toolUse(
+                                ToolUseBlock(
+                                    id: callId,
+                                    name: toolName,
+                                    input: toolInput
+                                )
+                            )
+                        ]
                     )
                 )
+                continue
+            }
+
+            if type == "response_item",
+               let payload = json["payload"] as? [String: Any],
+               payload["type"] as? String == "function_call_output",
+               let callId = payload["call_id"] as? String {
+                completedToolIds.insert(callId)
+                let rawToolName = rawToolNamesById[callId] ?? toolInputsById[callId]?["tool_name"] ?? "unknown"
+                let parsed = ExternalAgentToolSupport.parseResult(
+                    agentId: id,
+                    rawToolName: rawToolName,
+                    toolInput: toolInputsById[callId] ?? [:],
+                    rawOutput: payload["output"] as? String,
+                    rawPayload: payload
+                )
+                if let parserResult = parsed.parserResult {
+                    toolResults[callId] = parserResult
+                }
+                if let structuredResult = parsed.structuredResult {
+                    structuredResults[callId] = structuredResult
+                }
+                continue
             }
         }
 
-        return messages
+        return AgentHistorySnapshot(
+            messages: messages,
+            completedToolIds: completedToolIds,
+            toolResults: toolResults,
+            structuredResults: structuredResults,
+            conversationInfo: parseRolloutContent(content, fallbackTitle: conversation.title, fallbackDate: conversation.updatedAt)
+        )
     }
 
     func resolveCurrentConversation(cwd: String) -> ResolvedCodexConversation? {
         resolveConversation(sessionId: nil, cwd: cwd)
+    }
+
+    func resolveSessionId(cwd: String) -> String? {
+        resolveCurrentConversation(cwd: cwd)?.sessionId
     }
 
     func resolveConversation(sessionId: String?, cwd: String) -> ResolvedCodexConversation? {
@@ -162,7 +237,7 @@ struct CodexAgent: AIAgent {
     ) -> ResolvedCodexConversation? {
         let expandedDbPath = NSString(string: "~/.codex/state_5.sqlite").expandingTildeInPath
         let query = """
-        select id, rollout_path, title, updated_at
+        select id, rollout_path, title, updated_at, source
         from threads
         where \(whereClause)
         order by \(orderBy)
@@ -178,7 +253,7 @@ struct CodexAgent: AIAgent {
         }
 
         let parts = output.components(separatedBy: "|")
-        guard parts.count >= 4,
+        guard parts.count >= 5,
               let updatedAtEpoch = TimeInterval(parts[3]) else {
             return nil
         }
@@ -187,7 +262,8 @@ struct CodexAgent: AIAgent {
             sessionId: "codex-thread-\(parts[0])",
             rolloutPath: parts[1],
             title: parts[2],
-            updatedAt: Date(timeIntervalSince1970: updatedAtEpoch)
+            updatedAt: Date(timeIntervalSince1970: updatedAtEpoch),
+            source: parts[4]
         )
     }
 
@@ -211,43 +287,38 @@ struct CodexAgent: AIAgent {
         var lastUserMessage: String?
         var lastUserMessageDate: Date?
 
-        let lines = content.components(separatedBy: .newlines).filter { !$0.isEmpty }
+        let entries = content.components(separatedBy: .newlines)
+            .filter { !$0.isEmpty }
+            .compactMap { line -> [String: Any]? in
+                guard let data = line.data(using: .utf8) else { return nil }
+                return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
 
-        for line in lines {
-            guard let data = line.data(using: .utf8),
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let type = json["type"] as? String else {
+        for (index, json) in entries.enumerated() {
+            guard json["type"] as? String != nil else {
                 continue
             }
 
-            if type == "response_item",
-               let payload = json["payload"] as? [String: Any],
-               payload["type"] as? String == "message",
-               let role = payload["role"] as? String,
-               let messageText = extractMessageText(from: payload["content"]) {
-                if role == "user" {
+            if shouldSkipVisibleMessage(at: index, in: entries) {
+                continue
+            }
+
+            if let message = parseVisibleMessage(from: json) {
+                if message.role == .user {
                     if firstUserMessage == nil {
-                        firstUserMessage = Self.truncate(messageText, maxLength: 50)
+                        firstUserMessage = Self.truncate(message.text, maxLength: 50)
                     }
-                    lastUserMessage = Self.truncate(messageText, maxLength: 80)
+                    lastUserMessage = Self.truncate(message.text, maxLength: 80)
                     if let timestampStr = json["timestamp"] as? String {
                         lastUserMessageDate = formatter.date(from: timestampStr)
                     }
                 }
 
-                lastMessage = Self.truncate(messageText, maxLength: 80)
-                lastMessageRole = role
+                lastMessage = Self.truncate(message.text, maxLength: 80)
+                lastMessageRole = message.role == .user ? "user" : "assistant"
                 continue
-            }
-
-            if type == "event_msg",
-               let payload = json["payload"] as? [String: Any],
-               payload["type"] as? String == "agent_message",
-               let messageText = payload["message"] as? String {
-                lastMessage = Self.truncate(messageText, maxLength: 80)
-                lastMessageRole = "assistant"
             }
         }
 
@@ -307,6 +378,30 @@ struct CodexAgent: AIAgent {
                 return interaction
             }
 
+            if type == "response_item",
+               payload["type"] as? String == "function_call",
+               let name = payload["name"] as? String,
+               let callId = payload["call_id"] as? String,
+               !resolvedCallIds.contains(callId),
+               let arguments = payload["arguments"] as? String,
+               let jsonArguments = ExternalAgentToolSupport.decodeJSONObject(arguments),
+               jsonArguments["sandbox_permissions"] as? String == "require_escalated"
+                || jsonArguments["justification"] != nil {
+                let question = jsonArguments["justification"] as? String ?? "Allow \(name) to run?"
+                let command = jsonArguments["cmd"] as? String ?? jsonArguments["command"] as? String
+                let prompt = [question, command.map { "$ \($0)" }].compactMap { $0 }.joined(separator: "\n")
+                if let interaction = SessionInteractionRequest.fromHeuristicText(
+                    sessionId: sessionId,
+                    interactionId: callId,
+                    sourceAgent: "codex",
+                    text: "Would you like to run the following command?\n\(prompt)",
+                    timestamp: timestamp,
+                    submitMode: submitMode
+                ) {
+                    return interaction
+                }
+            }
+
             if type == "event_msg",
                payload["type"] as? String == "agent_message",
                let message = payload["message"] as? String,
@@ -343,19 +438,139 @@ struct CodexAgent: AIAgent {
         return nil
     }
 
+    private func shouldSkipVisibleMessage(at index: Int, in entries: [[String: Any]]) -> Bool {
+        guard index + 1 < entries.count,
+              isAgentMessage(entries[index]),
+              let currentText = parseVisibleMessage(from: entries[index])?.text,
+              let nextText = assistantResponseText(from: entries[index + 1]) else {
+            return false
+        }
+
+        return isEquivalentMessageText(currentText, nextText)
+    }
+
+    private func isAgentMessage(_ json: [String: Any]) -> Bool {
+        guard let type = json["type"] as? String,
+              type == "event_msg",
+              let payload = json["payload"] as? [String: Any] else {
+            return false
+        }
+        return payload["type"] as? String == "agent_message"
+    }
+
+    private func assistantResponseText(from json: [String: Any]) -> String? {
+        guard let type = json["type"] as? String,
+              type == "response_item",
+              let payload = json["payload"] as? [String: Any],
+              payload["type"] as? String == "message",
+              payload["role"] as? String == "assistant" else {
+            return nil
+        }
+        return extractMessageText(from: payload["content"])
+    }
+
+    private func isEquivalentMessageText(_ lhs: String, _ rhs: String) -> Bool {
+        let left = lhs.trimmingCharacters(in: .whitespacesAndNewlines)
+        let right = rhs.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !left.isEmpty, !right.isEmpty else { return false }
+        return left == right || left.contains(right) || right.contains(left)
+    }
+
+    private func parseVisibleMessage(from json: [String: Any]) -> (role: ChatRole, text: String)? {
+        guard let type = json["type"] as? String else { return nil }
+
+        if type == "response_item",
+           let payload = json["payload"] as? [String: Any],
+           payload["type"] as? String == "message",
+           let role = payload["role"] as? String,
+           let messageText = extractMessageText(from: payload["content"]),
+           !messageText.isEmpty {
+            return (role == "user" ? .user : .assistant, messageText)
+        }
+
+        if type == "event_msg",
+           let payload = json["payload"] as? [String: Any],
+           payload["type"] as? String == "agent_message",
+           let messageText = extractPlainText(payload["message"]),
+           !messageText.isEmpty {
+            return (.assistant, messageText)
+        }
+
+        return nil
+    }
+
     private func extractMessageText(from rawContent: Any?) -> String? {
+        if let text = extractPlainText(rawContent) {
+            return text
+        }
+
         if let parts = rawContent as? [[String: Any]] {
             let texts = parts.compactMap { part -> String? in
                 guard let type = part["type"] as? String else { return nil }
                 switch type {
-                case "input_text", "output_text":
-                    return part["text"] as? String
+                case "input_text", "output_text", "text":
+                    return extractPlainText(part["text"])
                 default:
                     return nil
                 }
             }
             let joined = texts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
             return joined.isEmpty ? nil : joined
+        }
+        return nil
+    }
+
+    private func extractPlainText(_ rawValue: Any?) -> String? {
+        guard let text = rawValue as? String else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func parseToolInput(from rawArguments: Any?) -> [String: String] {
+        if let arguments = rawArguments as? String,
+           let data = arguments.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            return serializeToolInput(json)
+        }
+
+        if let json = rawArguments as? [String: Any] {
+            return serializeToolInput(json)
+        }
+
+        if let text = rawArguments as? String {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? [:] : ["input": trimmed]
+        }
+
+        return [:]
+    }
+
+    private func serializeToolInput(_ payload: [String: Any]) -> [String: String] {
+        payload.reduce(into: [String: String]()) { result, entry in
+            if let stringValue = stringify(entry.value) {
+                result[entry.key] = stringValue
+            }
+        }
+    }
+
+    private func stringify(_ value: Any) -> String? {
+        if let string = value as? String {
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        if let intValue = value as? Int {
+            return String(intValue)
+        }
+        if let doubleValue = value as? Double {
+            return String(doubleValue)
+        }
+        if let boolValue = value as? Bool {
+            return boolValue ? "true" : "false"
+        }
+        if JSONSerialization.isValidJSONObject(value),
+           let data = try? JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed]),
+           let json = String(data: data, encoding: .utf8) {
+            return json
         }
         return nil
     }
@@ -392,6 +607,7 @@ struct CodexAgent: AIAgent {
     /// Returns array of (pid, cwd, sessionId, variant) tuples
     func detectRunningSessions() -> [(pid: Int, cwd: String, sessionId: String, variant: CodexVariant)] {
         var results: [(pid: Int, cwd: String, sessionId: String, variant: CodexVariant)] = []
+        var seenSessionIds = Set<String>()
 
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/ps")
@@ -418,19 +634,24 @@ struct CodexAgent: AIAgent {
                 guard components.count >= 2 else { continue }
 
                 let comm = components[1]
-                if comm == "codex" || comm == "_codex" {
-                    if let pid = Int(components[0]) {
-                        let cwd = ProcessTreeBuilder.shared.getWorkingDirectory(forPid: pid) ?? ""
-                        let sessionId = resolveCurrentConversation(cwd: cwd)?.sessionId ?? "codex-pid-\(pid)"
-                        let variant = Self.detectCodexVariant(pid: pid, command: comm)
-                        results.append((
-                            pid: pid,
-                            cwd: cwd,
-                            sessionId: sessionId,
-                            variant: variant
-                        ))
-                    }
+                guard let pid = Int(components[0]) else { continue }
+
+                let executablePath = ProcessTreeBuilder.shared.getExecutablePath(forPid: pid)
+                guard Self.looksLikeCodexProcess(command: comm, executablePath: executablePath) else {
+                    continue
                 }
+
+                let cwd = ProcessTreeBuilder.shared.getWorkingDirectory(forPid: pid) ?? ""
+                let sessionId = resolveSessionId(cwd: cwd) ?? "codex-pid-\(pid)"
+                guard seenSessionIds.insert(sessionId).inserted else { continue }
+
+                let variant = Self.detectCodexVariant(pid: pid, command: comm, executablePath: executablePath)
+                results.append((
+                    pid: pid,
+                    cwd: cwd,
+                    sessionId: sessionId,
+                    variant: variant
+                ))
             }
         } catch {
             // Silently fail
@@ -440,9 +661,9 @@ struct CodexAgent: AIAgent {
     }
 
     /// Determine whether a Codex process is the CLI binary or the desktop App.
-    private static func detectCodexVariant(pid: Int, command: String) -> CodexVariant {
-        if let path = ProcessTreeBuilder.shared.getExecutablePath(forPid: pid) {
-            if path.contains(".app/Contents/MacOS") {
+    private static func detectCodexVariant(pid _: Int, command: String, executablePath: String?) -> CodexVariant {
+        if let path = executablePath {
+            if path.contains("/Codex.app/") {
                 return .app
             }
             if path.contains("/.codex/") || path.contains("/bin/codex") {
@@ -452,6 +673,19 @@ struct CodexAgent: AIAgent {
         // Heuristic: capitalized "Codex" is typically the App
         return command.first?.isUppercase == true ? .app : .unknown
     }
+
+    private static func looksLikeCodexProcess(command: String, executablePath: String?) -> Bool {
+        let loweredCommand = command.lowercased()
+        if ["codex", "_codex", "openai-codex"].contains(loweredCommand) {
+            return true
+        }
+
+        guard let executablePath else { return false }
+        let loweredPath = executablePath.lowercased()
+        return loweredPath.contains("/codex.app/")
+            || loweredPath.contains("/.codex/")
+            || loweredPath.hasSuffix("/bin/codex")
+    }
 }
 
 
@@ -460,6 +694,7 @@ struct ResolvedCodexConversation: Sendable {
     let rolloutPath: String
     let title: String
     let updatedAt: Date
+    let source: String
 }
 
 enum CodexHookConfig {
