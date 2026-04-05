@@ -1,33 +1,10 @@
 import pathlib
 
-msg = """feat(windows/remote): add SSH remote host support via reverse port tunnel
+msg = """fix(windows): address community feedback on SSH hosts and paths
 
-- New SSHConfigReader: auto-detects VSCode custom SSH config or system
-  ~/.ssh/config, parses Host entries, watches for live changes
-- New TunnelManager: manages independent ssh -N -R reverse port forward
-  per remote host using system OpenSSH binary (no ssh2 lib dependency)
-  - Installs/syncs hook script on connect via heredoc over SSH
-  - Detects auth failures from stderr, emits authRequired for UI guidance
-  - Auto-reconnects with exponential backoff (5s->10s->20s->40s->60s)
-  - Syncs hook script on every reconnect to keep remote up-to-date
-- New RemoteHostStore: persists managed hosts in ConfigStore, restores
-  autoConnect hosts on app startup
-- Hook script: adds hostname and is_remote fields to all events
-- Session store: store and update hostname/isRemote per session
-- Main process: wires TunnelManager events, adds IPC for remote hosts
-- Preload: exposes getSshHosts, connectRemote, disconnectRemote, retry,
-  onRemoteStatusChanged, onRemoteAuthRequired, onSshHostsChanged
-- Settings UI: Remote Hosts panel shows SSH config hosts with live
-  connect/disconnect status and one-click tunnel management
-- Session cards: remote sessions show globe icon + hostname badge
-- Auth Required dialog: guides user to run ssh-add with copy + Retry
-
-Tests written and verified:
-- test-ssh-config.js: config path detection, host parsing (4 hosts found)
-- test-tunnel-manager.js: init, SSH binary availability check
-- test-remote-store.js: addHost, autoConnect filter, markConnected, remove
-- test-remote-event.js: hostname/is_remote correctly propagated end-to-end
-- send-test-event.js all: full session lifecycle incl. permission approve
+1. Added 'Add Custom Host' button to manually enter SSH hosts not mapped in the local user's ssh config.
+2. Fixed a bug where removing local Claude paths failed due to unescaped Windows backslashes in HTML data attributes. Replaced raw string passing with `encodeURIComponent` and `decodeURIComponent`.
+3. Fixed 'No such file or directory' when checking/modifying remote hook scripts where the target directory used a `~` prefix. Python `open()` does not automatically expand tildes; wrapped path variables in `os.path.expanduser`.
 """
 
 pathlib.Path(r"C:/Users/pangy/AppData/Local/Temp/cm.txt").write_text(msg, encoding="utf-8")

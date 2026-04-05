@@ -734,6 +734,131 @@ html, body {
   100% { background-position: -200% 0; }
 }
 
+/* ─── SSH Config Row ─────────────────────────────────────────── */
+
+.ssh-config-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 4px;
+}
+
+.ssh-config-path {
+  flex: 1;
+  font-size: 11px;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ─── Machine Card ───────────────────────────────────────────── */
+
+.machine-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  margin-bottom: 8px;
+  transition: border-color var(--transition-fast);
+}
+
+.machine-card:hover {
+  border-color: rgba(255, 255, 255, 0.09);
+}
+
+.machine-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.machine-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.machine-icon {
+  font-size: 14px;
+}
+
+.machine-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+}
+
+.machine-tag {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 2px 7px;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.06);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.machine-status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.machine-paths {
+  margin-bottom: 8px;
+}
+
+.machine-path-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.machine-path-row:last-child {
+  border-bottom: none;
+}
+
+.machine-path-text {
+  flex: 1;
+  font-size: 11px;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.machine-actions {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.machine-remove-btn {
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.machine-card:hover .machine-remove-btn {
+  opacity: 1;
+}
+
+.btn-xs {
+  padding: 2px 6px;
+  font-size: 10px;
+}
+
 /* ─── Session Hostname Badge ─────────────────────────────────── */
 
 .session-host {

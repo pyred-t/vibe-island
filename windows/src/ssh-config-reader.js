@@ -20,10 +20,20 @@ class SSHConfigReader extends EventEmitter {
   }
 
   /**
-   * Get path to VSCode's SSH config (or system default)
+   * Get path to VSCode's SSH config (or system default or user-configured)
+   * Priority: user config (configStore.sshConfigPath) > VSCode setting > ~/.ssh/config
    */
   _resolveConfigPath() {
-    // Try to read VSCode user settings for custom SSH config path
+    // 1. User-explicitly configured path (highest priority)
+    try {
+      const configStore = require('./config-store');
+      const custom = configStore.get('sshConfigPath');
+      if (custom && require('fs').existsSync(custom)) {
+        return custom;
+      }
+    } catch { /* configStore not ready yet */ }
+
+    // 2. VSCode's custom SSH config file setting
     try {
       const vscodeSettingsPath = path.join(
         process.env.APPDATA || os.homedir(),
@@ -31,7 +41,6 @@ class SSHConfigReader extends EventEmitter {
       );
       if (fs.existsSync(vscodeSettingsPath)) {
         const raw = fs.readFileSync(vscodeSettingsPath, 'utf8');
-        // Strip JSON comments (VSCode settings allow them)
         const stripped = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
         const settings = JSON.parse(stripped);
         const customPath = settings['remote.SSH.configFile'];
@@ -39,11 +48,9 @@ class SSHConfigReader extends EventEmitter {
           return customPath;
         }
       }
-    } catch (e) {
-      // VSCode not installed or settings unreadable — fall through
-    }
+    } catch { /* VSCode not installed or settings unreadable */ }
 
-    // Default: ~/.ssh/config
+    // 3. Default: ~/.ssh/config
     return path.join(os.homedir(), '.ssh', 'config');
   }
 

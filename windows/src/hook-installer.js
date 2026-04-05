@@ -2,6 +2,8 @@
  * Hook Installer for Claude Island Windows
  * Installs Python hook scripts into Claude Code's settings.json
  * Supports both Windows native and WSL paths.
+ *
+ * Now works per-machine using machines[].claudePaths
  */
 const fs = require('fs');
 const path = require('path');
@@ -15,13 +17,21 @@ class HookInstaller {
   }
 
   /**
-   * Install hooks for all configured Claude Code paths
+   * Install hooks for all paths in the local machine
    */
   installAll() {
-    const results = [];
-    const paths = configStore.get('claudeConfigPaths') || [];
+    const local = configStore.getLocalMachine();
+    if (!local) return [];
+    return this.installForMachine(local);
+  }
 
-    for (const claudePath of paths) {
+  /**
+   * Install hooks for all claude paths in a machine object
+   * Only works for local/WSL paths (not SSH — that's handled by TunnelManager)
+   */
+  installForMachine(machine) {
+    const results = [];
+    for (const claudePath of machine.claudePaths) {
       try {
         const result = this.install(claudePath);
         results.push({ path: claudePath, ...result });
@@ -29,20 +39,18 @@ class HookInstaller {
         results.push({ path: claudePath, success: false, error: err.message });
       }
     }
-
     return results;
   }
 
   /**
-   * Install hooks for a specific Claude Code configuration path
+   * Install hooks for a specific Claude Code configuration path (Windows/WSL)
    */
   install(claudeConfigPath) {
-    // Ensure the path exists
     if (!fs.existsSync(claudeConfigPath)) {
       return { success: false, error: `Path does not exist: ${claudeConfigPath}` };
     }
 
-    // 1. Copy hook script to ~/.claude/hooks/
+    // 1. Copy hook script to <claudeConfigPath>/hooks/
     const hooksDir = path.join(claudeConfigPath, 'hooks');
     if (!fs.existsSync(hooksDir)) {
       fs.mkdirSync(hooksDir, { recursive: true });
@@ -58,7 +66,6 @@ class HookInstaller {
     // 2. Update settings.json with hook configuration
     const settingsPath = path.join(claudeConfigPath, 'settings.json');
     let settings = {};
-
     try {
       if (fs.existsSync(settingsPath)) {
         settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
@@ -67,38 +74,28 @@ class HookInstaller {
       console.warn(`Failed to parse existing settings.json: ${err.message}`);
     }
 
-    // Build the hook command
-    // Determine appropriate Python command and script path
     const port = configStore.get('port') || 51515;
     const isWSL = this._isWSLPath(claudeConfigPath);
 
     let commandPath;
     if (isWSL) {
-      // For WSL, the script is accessed from WSL filesystem
-      // Convert Windows UNC path to WSL path
-      const wslScriptPath = this._windowsToWSLPath(destScript, claudeConfigPath);
+      const wslScriptPath = this._windowsToWSLPath(destScript);
       commandPath = `python3 ${wslScriptPath} --port ${port}`;
     } else {
       commandPath = `python "${destScript}" --port ${port}`;
     }
 
-    // Build hook config entries
     const hookConfig = this._buildHookConfig(commandPath);
 
-    // Merge hooks into settings
     if (!settings.hooks) settings.hooks = {};
-
-    // Remove any existing Claude Island hooks first
     settings.hooks = this._stripManagedHooks(settings.hooks);
 
-    // Add our hooks
     for (const config of hookConfig) {
       const event = config.event;
       if (!settings.hooks[event]) settings.hooks[event] = [];
       settings.hooks[event].push(...config.config);
     }
 
-    // Write settings back
     try {
       fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
     } catch (err) {
@@ -114,39 +111,31 @@ class HookInstaller {
   }
 
   /**
-   * Uninstall hooks from a specific Claude Code config path
+   * Uninstall hooks from a specific path
    */
   uninstall(claudeConfigPath) {
-    // Remove the hook script
     const destScript = path.join(claudeConfigPath, 'hooks', HOOK_SCRIPT_NAME);
     try {
       if (fs.existsSync(destScript)) fs.unlinkSync(destScript);
-    } catch (err) { /* ignore */ }
+    } catch { /* ignore */ }
 
-    // Clean settings.json
     const settingsPath = path.join(claudeConfigPath, 'settings.json');
     try {
       if (fs.existsSync(settingsPath)) {
         const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
         if (settings.hooks) {
           settings.hooks = this._stripManagedHooks(settings.hooks);
-
-          // Remove empty hook arrays
           for (const key of Object.keys(settings.hooks)) {
             if (Array.isArray(settings.hooks[key]) && settings.hooks[key].length === 0) {
               delete settings.hooks[key];
             }
           }
-          if (Object.keys(settings.hooks).length === 0) {
-            delete settings.hooks;
-          }
-
+          if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
           fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
         }
       }
-    } catch (err) { /* ignore */ }
+    } catch { /* ignore */ }
 
-    // Update tracking
     const installed = configStore.get('hooksInstalled') || {};
     delete installed[claudeConfigPath];
     configStore.set('hooksInstalled', installed);
@@ -161,8 +150,6 @@ class HookInstaller {
       if (!fs.existsSync(settingsPath)) return false;
       const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
       if (!settings.hooks) return false;
-
-      // Check if at least the main events have our hooks
       const requiredEvents = ['PreToolUse', 'PermissionRequest', 'Stop', 'SessionStart', 'SessionEnd'];
       return requiredEvents.every(event => {
         const entries = settings.hooks[event];
@@ -178,17 +165,18 @@ class HookInstaller {
   }
 
   /**
-   * Check if all configured paths have hooks installed
+   * Get hook status for all paths in a machine
    */
-  areAllInstalled() {
-    const paths = configStore.getValidClaudePaths();
-    if (paths.length === 0) return false;
-    return paths.every(p => this.isInstalled(p));
+  getMachineHookStatus(machine) {
+    return machine.claudePaths.map(p => ({
+      path: p,
+      exists: (() => { try { return fs.existsSync(p); } catch { return false; } })(),
+      installed: (() => { try { return this.isInstalled(p); } catch { return false; } })(),
+    }));
   }
 
-  /**
-   * Build hook configuration matching Claude Code's format
-   */
+  // ─── Private helpers ──────────────────────────────────────────
+
   _buildHookConfig(commandPath) {
     const hookEntry = [{ type: 'command', command: commandPath }];
     const hookEntryWithTimeout = [{ type: 'command', command: commandPath, timeout: 86400 }];
@@ -214,67 +202,36 @@ class HookInstaller {
     ];
   }
 
-  /**
-   * Strip any Claude Island managed hooks from a hooks config
-   */
   _stripManagedHooks(hooks) {
     const cleaned = {};
-
     for (const [event, entries] of Object.entries(hooks)) {
-      if (!Array.isArray(entries)) {
-        cleaned[event] = entries;
-        continue;
-      }
-
+      if (!Array.isArray(entries)) { cleaned[event] = entries; continue; }
       const filteredEntries = entries.filter(entry => {
         const entryHooks = entry.hooks || [entry];
         if (!Array.isArray(entryHooks)) return true;
-
         const remaining = entryHooks.filter(h => !this._isManagedCommand(h.command || ''));
         if (remaining.length === 0) return false;
-
-        if (entry.hooks) {
-          entry.hooks = remaining;
-        }
+        if (entry.hooks) entry.hooks = remaining;
         return true;
       });
-
-      if (filteredEntries.length > 0) {
-        cleaned[event] = filteredEntries;
-      }
+      if (filteredEntries.length > 0) cleaned[event] = filteredEntries;
     }
-
     return cleaned;
   }
 
-  /**
-   * Check if a command string is managed by Claude Island
-   */
   _isManagedCommand(command) {
     return command.includes(HOOK_SCRIPT_NAME) || command.includes('claude-island');
   }
 
-  /**
-   * Check if a path is a WSL network path
-   */
   _isWSLPath(p) {
-    const normalized = p.replace(/\\/g, '/').toLowerCase();
-    return normalized.startsWith('//wsl$') || normalized.startsWith('//wsl.localhost');
+    const n = p.replace(/\\/g, '/').toLowerCase();
+    return n.startsWith('//wsl$') || n.startsWith('//wsl.localhost');
   }
 
-  /**
-   * Convert a Windows UNC WSL path to a WSL-internal path
-   * \\wsl$\Ubuntu\home\user\.claude → /home/user/.claude
-   * \\wsl.localhost\Ubuntu\home\user\.claude → /home/user/.claude
-   */
-  _windowsToWSLPath(windowsPath, contextPath) {
+  _windowsToWSLPath(windowsPath) {
     const normalized = windowsPath.replace(/\\/g, '/');
-    // Match \\wsl$\<distro>\... or \\wsl.localhost\<distro>\...
-    const match = normalized.match(/^\/\/(wsl\$|wsl\.localhost)\/[^/]+(\/.*)$/i);
-    if (match) {
-      return match[2]; // Return the path after the distro name
-    }
-    // Fallback: just use the path as-is
+    const match = normalized.match(/^\/(\/)(wsl\$|wsl\.localhost)\/[^/]+(\/.*)/i);
+    if (match) return match[3];
     return windowsPath;
   }
 }

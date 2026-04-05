@@ -31,34 +31,49 @@ contextBridge.exposeInMainWorld('claudeIsland', {
   // Configuration
   getConfig: () => ipcRenderer.invoke('get-config'),
   setConfig: (key, value) => ipcRenderer.invoke('set-config', key, value),
-  addClaudePath: (path) => ipcRenderer.invoke('add-claude-path', path),
-  removeClaudePath: (path) => ipcRenderer.invoke('remove-claude-path', path),
   onConfigChanged: (callback) => {
     const handler = (_event, config) => callback(config);
     ipcRenderer.on('config-changed', handler);
     return () => ipcRenderer.removeListener('config-changed', handler);
   },
 
-  // Hook management
-  installHooks: () => ipcRenderer.invoke('install-hooks'),
-  getHookStatus: () => ipcRenderer.invoke('get-hook-status'),
+  // ─── Machines (per-machine config) ───────────────────────────
+  getMachines: () => ipcRenderer.invoke('get-machines'),
+  addSSHMachine: (alias, options) => ipcRenderer.invoke('add-ssh-machine', alias, options),
+  updateMachine: (id, updates) => ipcRenderer.invoke('update-machine', id, updates),
+  removeMachine: (id) => ipcRenderer.invoke('remove-machine', id),
+  addClaudePathToMachine: (machineId, path) =>
+    ipcRenderer.invoke('add-claude-path-to-machine', machineId, path),
+  removeClaudePathFromMachine: (machineId, path) =>
+    ipcRenderer.invoke('remove-claude-path-from-machine', machineId, path),
 
-  // Window controls
-  hideWindow: () => ipcRenderer.send('hide-window'),
+  onMachinesChanged: (callback) => {
+    const handler = (_event, config) => callback(config.machines);
+    ipcRenderer.on('config-changed', handler);
+    return () => ipcRenderer.removeListener('config-changed', handler);
+  },
 
-  // Dialog
-  selectDirectory: () => ipcRenderer.invoke('select-directory'),
+  // ─── Hook management ──────────────────────────────────────────
+  installHooksForMachine: (machineId) =>
+    ipcRenderer.invoke('install-hooks-for-machine', machineId),
+  getMachineHookStatus: (machineId) =>
+    ipcRenderer.invoke('get-machine-hook-status', machineId),
 
-  // Remote SSH hosts
+  // ─── SSH Config ───────────────────────────────────────────────
   getSshHosts: () => ipcRenderer.invoke('get-ssh-hosts'),
   getSshConfigPath: () => ipcRenderer.invoke('get-ssh-config-path'),
-  getRemoteHosts: () => ipcRenderer.invoke('get-remote-hosts'),
-  getRemoteStatuses: () => ipcRenderer.invoke('get-remote-statuses'),
-  connectRemote: (alias, port) => ipcRenderer.invoke('connect-remote', alias, port),
-  disconnectRemote: (alias) => ipcRenderer.invoke('disconnect-remote', alias),
-  removeRemoteHost: (alias) => ipcRenderer.invoke('remove-remote-host', alias),
-  retryRemote: (alias) => ipcRenderer.invoke('retry-remote', alias),
+  selectSshConfigFile: () => ipcRenderer.invoke('select-ssh-config-file'),
+  onSshHostsChanged: (callback) => {
+    const handler = (_event, hosts) => callback(hosts);
+    ipcRenderer.on('ssh-hosts-changed', handler);
+    return () => ipcRenderer.removeListener('ssh-hosts-changed', handler);
+  },
 
+  // ─── Tunnel management ────────────────────────────────────────
+  getRemoteStatuses: () => ipcRenderer.invoke('get-remote-statuses'),
+  connectMachine: (machineId) => ipcRenderer.invoke('connect-machine', machineId),
+  disconnectMachine: (machineId) => ipcRenderer.invoke('disconnect-machine', machineId),
+  retryMachine: (machineId) => ipcRenderer.invoke('retry-machine', machineId),
   onRemoteStatusChanged: (callback) => {
     const handler = (_event, data) => callback(data);
     ipcRenderer.on('remote-status-changed', handler);
@@ -69,9 +84,8 @@ contextBridge.exposeInMainWorld('claudeIsland', {
     ipcRenderer.on('remote-auth-required', handler);
     return () => ipcRenderer.removeListener('remote-auth-required', handler);
   },
-  onSshHostsChanged: (callback) => {
-    const handler = (_event, hosts) => callback(hosts);
-    ipcRenderer.on('ssh-hosts-changed', handler);
-    return () => ipcRenderer.removeListener('ssh-hosts-changed', handler);
-  },
+
+  // ─── Window controls ──────────────────────────────────────────
+  hideWindow: () => ipcRenderer.send('hide-window'),
+  selectDirectory: () => ipcRenderer.invoke('select-directory'),
 });

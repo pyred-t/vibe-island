@@ -138,31 +138,112 @@ function setupIPC() {
 
   ipcMain.handle('set-config', (_event, key, value) => {
     configStore.set(key, value);
+    // If SSH config path changed, reload the reader
+    if (key === 'sshConfigPath') {
+      sshConfigReader.watch();
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('ssh-hosts-changed', sshConfigReader.getHosts());
+      }
+    }
     return true;
   });
 
-  ipcMain.handle('add-claude-path', (_event, newPath) => {
-    configStore.addClaudePath(newPath);
-    return configStore.get('claudeConfigPaths');
+  // ─── Machine CRUD ──────────────────────────────────────────────
+
+  ipcMain.handle('get-machines', () => configStore.getMachines());
+
+  ipcMain.handle('add-ssh-machine', (_event, alias, options) => {
+    return configStore.addSSHMachine(alias, options || {});
   });
 
-  ipcMain.handle('remove-claude-path', (_event, pathToRemove) => {
-    configStore.removeClaudePath(pathToRemove);
-    return configStore.get('claudeConfigPaths');
+  ipcMain.handle('update-machine', (_event, id, updates) => {
+    return configStore.updateMachine(id, updates);
   });
 
-  ipcMain.handle('install-hooks', () => {
-    return hookInstaller.installAll();
+  ipcMain.handle('remove-machine', (_event, id) => {
+    tunnelManager.disconnect(id);
+    return configStore.removeMachine(id);
   });
 
-  ipcMain.handle('get-hook-status', () => {
-    const paths = configStore.get('claudeConfigPaths') || [];
-    return paths.map(p => ({
-      path: p,
-      installed: hookInstaller.isInstalled(p),
-      exists: (() => { try { return require('fs').existsSync(p); } catch { return false; } })(),
-    }));
+  ipcMain.handle('add-claude-path-to-machine', (_event, machineId, newPath) => {
+    return configStore.addClaudePathToMachine(machineId, newPath);
   });
+
+  ipcMain.handle('remove-claude-path-from-machine', (_event, machineId, p) => {
+    return configStore.removeClaudePathFromMachine(machineId, p);
+  });
+
+  // ─── Hook Management ───────────────────────────────────────────
+
+  ipcMain.handle('install-hooks-for-machine', (_event, machineId) => {
+    const machine = configStore.getMachine(machineId);
+    if (!machine) return { error: 'Machine not found' };
+    if (machine.type === 'local') {
+      return hookInstaller.installForMachine(machine);
+    }
+    return { error: 'Use connect-machine to install hooks on SSH machines' };
+  });
+
+  ipcMain.handle('get-machine-hook-status', (_event, machineId) => {
+    const machine = configStore.getMachine(machineId);
+    if (!machine) return [];
+    return hookInstaller.getMachineHookStatus(machine);
+  });
+
+  // ─── SSH Config ─────────────────────────────────────────────────
+
+  ipcMain.handle('get-ssh-hosts', () => sshConfigReader.getHosts());
+  ipcMain.handle('get-ssh-config-path', () => sshConfigReader.getConfigPath());
+
+  ipcMain.handle('select-ssh-config-file', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openFile'],
+      title: 'Select SSH Config File',
+      filters: [{ name: 'All Files', extensions: ['*'] }],
+      defaultPath: require('path').join(require('os').homedir(), '.ssh'),
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    const chosen = result.filePaths[0];
+    configStore.set('sshConfigPath', chosen);
+    sshConfigReader.watch();
+    return chosen;
+  });
+
+  // ─── Tunnel Management ──────────────────────────────────────────
+
+  ipcMain.handle('get-remote-statuses', () => tunnelManager.getAllStatuses());
+
+  ipcMain.handle('connect-machine', async (_event, machineId) => {
+    const machine = configStore.getMachine(machineId);
+    if (!machine || machine.type !== 'ssh') return { ok: false, error: 'Not an SSH machine' };
+    configStore.updateMachine(machineId, { autoConnect: true });
+    try {
+      await tunnelManager.connect(machine);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('disconnect-machine', (_event, machineId) => {
+    const machine = configStore.getMachine(machineId);
+    if (machine?.sshAlias) tunnelManager.disconnect(machine.sshAlias);
+    configStore.updateMachine(machineId, { autoConnect: false });
+    return true;
+  });
+
+  ipcMain.handle('retry-machine', async (_event, machineId) => {
+    const machine = configStore.getMachine(machineId);
+    if (!machine || machine.type !== 'ssh') return { ok: false, error: 'Not an SSH machine' };
+    try {
+      await tunnelManager.connect(machine);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  // ─── Window ─────────────────────────────────────────────────────
 
   ipcMain.on('hide-window', () => {
     if (mainWindow) mainWindow.hide();
@@ -175,48 +256,6 @@ function setupIPC() {
     });
     if (result.canceled || result.filePaths.length === 0) return null;
     return result.filePaths[0];
-  });
-
-  // ─── Remote Host IPC ──────────────────────────────────────────
-
-  ipcMain.handle('get-ssh-hosts', () => sshConfigReader.getHosts());
-  ipcMain.handle('get-ssh-config-path', () => sshConfigReader.getConfigPath());
-
-  ipcMain.handle('get-remote-hosts', () => remoteHostStore.getAll());
-  ipcMain.handle('get-remote-statuses', () => tunnelManager.getAllStatuses());
-
-  ipcMain.handle('connect-remote', async (_event, alias, port) => {
-    remoteHostStore.addHost(alias, { port: port || 51515, autoConnect: true });
-    try {
-      await tunnelManager.connect(alias, port || 51515);
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, error: err.message };
-    }
-  });
-
-  ipcMain.handle('disconnect-remote', (_event, alias) => {
-    tunnelManager.disconnect(alias);
-    remoteHostStore.setAutoConnect(alias, false);
-    return true;
-  });
-
-  ipcMain.handle('remove-remote-host', (_event, alias) => {
-    tunnelManager.disconnect(alias);
-    remoteHostStore.removeHost(alias);
-    return true;
-  });
-
-  ipcMain.handle('retry-remote', async (_event, alias) => {
-    const hosts = remoteHostStore.getAll();
-    const host = hosts.find(h => h.alias === alias);
-    const p = host?.port || 51515;
-    try {
-      await tunnelManager.connect(alias, p);
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, error: err.message };
-    }
   });
 }
 
@@ -286,7 +325,9 @@ function wireEvents() {
       showWindow();
     }
     if (status === TunnelStatus.CONNECTED) {
-      remoteHostStore.markConnected(alias);
+      // Mark connected timestamp in configStore
+      const machine = configStore.getMachineBySSHAlias(alias);
+      if (machine) configStore.updateMachine(machine.id, { lastConnected: new Date().toISOString() });
     }
   });
 
@@ -314,11 +355,9 @@ app.whenReady().then(() => {
   const tunnelModule = require('./src/tunnel-manager');
   tunnelManager = tunnelModule.TunnelManager;
   TunnelStatus = tunnelModule.TunnelStatus;
-  remoteHostStore = require('./src/remote-host-store');
 
   // Load configuration
   configStore.load();
-  remoteHostStore.init(configStore);
 
   // Start watching SSH config for host list updates
   sshConfigReader.watch();
@@ -348,11 +387,11 @@ app.whenReady().then(() => {
   // Install hooks on local paths
   hookInstaller.installAll();
 
-  // Auto-connect remote hosts from last session
-  const autoHosts = remoteHostStore.getAutoConnect();
-  for (const host of autoHosts) {
-    tunnelManager.connect(host.alias, host.port).catch(err => {
-      console.warn(`[Remote] Auto-connect failed for ${host.alias}:`, err.message);
+  // Auto-connect SSH machines that had autoConnect set
+  const autoMachines = configStore.getSSHMachines().filter(m => m.autoConnect);
+  for (const machine of autoMachines) {
+    tunnelManager.connect(machine).catch(err => {
+      console.warn(`[Remote] Auto-connect failed for ${machine.sshAlias}:`, err.message);
     });
   }
 
