@@ -232,9 +232,9 @@ function createSessionCard(session) {
         ${preview ? `<div class="permission-tool-input">${escapeHtml(preview)}</div>` : ''}
       </div>
       <div class="permission-actions">
-        <button class="btn btn-success btn-sm" onclick="handleApprove('${session.sessionId}','${p.toolUseId}')">Allow</button>
-        <button class="btn btn-warning btn-sm" onclick="handleAlwaysAllow('${session.sessionId}','${p.toolUseId}')">Always</button>
-        <button class="btn btn-danger btn-sm" onclick="handleDeny('${session.sessionId}','${p.toolUseId}')">Deny</button>
+        <button class="btn btn-success btn-sm" onclick="handleApprove('${session.sessionId}','${p.toolUseId}', this)">Allow</button>
+        <button class="btn btn-warning btn-sm" onclick="handleAlwaysAllow('${session.sessionId}','${p.toolUseId}', this)">Always</button>
+        <button class="btn btn-danger btn-sm" onclick="handleDeny('${session.sessionId}','${p.toolUseId}', this)">Deny</button>
       </div>`;
   }
 
@@ -246,9 +246,8 @@ function createSessionCard(session) {
         <div class="interaction-question">${escapeHtml(q)}</div>
         <div class="interaction-input-row">
           <input type="text" class="interaction-input" id="interaction-${session.sessionId}"
-            placeholder="Your response..."
-            onkeydown="if(event.key==='Enter')handleInteraction('${session.sessionId}','${session.activeInteraction.toolUseId}')">
-          <button class="btn btn-primary btn-sm" onclick="handleInteraction('${session.sessionId}','${session.activeInteraction.toolUseId}')">Send</button>
+            onkeydown="if(event.key==='Enter')handleInteraction('${session.sessionId}','${session.activeInteraction.toolUseId}', event.target.nextElementSibling)">
+          <button class="btn btn-primary btn-sm" onclick="handleInteraction('${session.sessionId}','${session.activeInteraction.toolUseId}', this)">Send</button>
         </div>
       </div>`;
   }
@@ -276,20 +275,25 @@ function createSessionCard(session) {
 
 // ─── Session Actions ────────────────────────────────────────────
 
-async function handleApprove(sessionId, toolUseId) {
+async function handleApprove(sessionId, toolUseId, btn) {
+  if (btn) { btn.disabled = true; btn.innerText = 'Allowing...'; }
   await window.claudeIsland.approvePermission(sessionId, toolUseId);
 }
-async function handleAlwaysAllow(sessionId, toolUseId) {
+async function handleAlwaysAllow(sessionId, toolUseId, btn) {
+  if (btn) { btn.disabled = true; btn.innerText = 'Allowing...'; }
   await window.claudeIsland.alwaysAllowPermission(sessionId, toolUseId);
 }
-async function handleDeny(sessionId, toolUseId) {
+async function handleDeny(sessionId, toolUseId, btn) {
+  if (btn) { btn.disabled = true; btn.innerText = 'Denying...'; }
   await window.claudeIsland.denyPermission(sessionId, toolUseId, 'Denied by user');
 }
-async function handleInteraction(sessionId, toolUseId) {
+async function handleInteraction(sessionId, toolUseId, btn) {
   const input = document.getElementById(`interaction-${sessionId}`);
   if (!input || !input.value.trim()) return;
-  await window.claudeIsland.submitInteraction(sessionId, toolUseId, { question: input.value.trim() });
-  input.value = '';
+  const val = input.value.trim();
+  if (btn) { btn.disabled = true; btn.innerText = 'Sending...'; }
+  input.disabled = true;
+  await window.claudeIsland.submitInteraction(sessionId, toolUseId, { question: val });
 }
 async function handleArchive(sessionId) {
   await window.claudeIsland.archiveSession(sessionId);
@@ -347,6 +351,7 @@ function renderMachineCard(machine) {
         ? `<button class="btn btn-outline btn-sm" onclick="machineRetry('${machine.id}')">Retry</button>`
         : `<button class="btn btn-primary btn-sm" onclick="machineConnect('${machine.id}')">Connect</button>`;
     actionsHtml = `${connectBtn}
+      <button class="btn btn-ghost btn-sm" onclick="machineInstallHooks('${machine.id}', this)" ${!connected ? 'disabled title="Connect first"' : ''}>Force Sync</button>
       <button class="btn btn-ghost btn-sm" onclick="machineAddRemotePath('${machine.id}')">+ Path</button>
       <button class="btn btn-ghost btn-sm machine-remove-btn" onclick="machineRemove('${machine.id}')">Remove</button>`;
   }
@@ -403,16 +408,18 @@ async function machineRemovePath(machineId, encodedPath) {
   renderMachines();
 }
 
-async function machineInstallHooks(machineId) {
-  const btn = event?.target;
-  if (btn) { btn.textContent = 'Installing…'; btn.disabled = true; }
+async function machineInstallHooks(machineId, btnArg) {
+  const btn = btnArg || event?.target;
+  const originalText = btn?.textContent || 'Install Hooks';
+  if (btn) { btn.textContent = 'Syncing…'; btn.disabled = true; }
   try {
-    await window.claudeIsland.installHooksForMachine(machineId);
+    const res = await window.claudeIsland.installHooksForMachine(machineId);
+    if (res?.error) alert('Sync failed:\n' + res.error);
     const machine = machines.find(m => m.id === machineId);
     if (machine) machine.claudePaths.forEach(p => delete _hookStatusCache[`${machineId}:${p}`]);
     renderMachines();
   } finally {
-    if (btn) { btn.textContent = 'Install Hooks'; btn.disabled = false; }
+    if (btn) { btn.textContent = originalText; btn.disabled = false; }
   }
 }
 

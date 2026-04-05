@@ -175,13 +175,20 @@ function setupIPC() {
 
   // ─── Hook Management ───────────────────────────────────────────
 
-  ipcMain.handle('install-hooks-for-machine', (_event, machineId) => {
+  ipcMain.handle('install-hooks-for-machine', async (_event, machineId) => {
     const machine = configStore.getMachine(machineId);
     if (!machine) return { error: 'Machine not found' };
     if (machine.type === 'local') {
       return hookInstaller.installForMachine(machine);
     }
-    return { error: 'Use connect-machine to install hooks on SSH machines' };
+    // Remote SSH machine
+    if (!machine.sshAlias) return { error: 'Missing sshAlias' };
+    try {
+      await tunnelManager.forceInstallHooks(machine.sshAlias);
+      return { success: true };
+    } catch (e) {
+      return { error: e.message };
+    }
   });
 
   ipcMain.handle('get-machine-hook-status', (_event, machineId) => {
@@ -275,6 +282,15 @@ function wireEvents() {
     if (event.event === 'PostToolUse' && event.tool_use_id) {
       hookServer.cancelPendingPermission(event.tool_use_id);
     }
+  });
+
+  // Optimistic UI updates when user resolves permission/interaction
+  hookServer.on('permissionResolved', ({ sessionId, toolUseId }) => {
+    SessionStore.permissionApproved(sessionId, toolUseId); // Or denied, both transition phase to PROCESSING
+  });
+
+  hookServer.on('interactionResolved', ({ sessionId, toolUseId }) => {
+    SessionStore.interactionSubmitted(sessionId, toolUseId);
   });
 
   // Session store → Window updates

@@ -59,6 +59,14 @@ class TunnelManager extends EventEmitter {
     await this._doConnect(hostAlias);
   }
 
+  /**
+   * Force manually synchronize hooks for a connected tunnel.
+   */
+  async forceInstallHooks(hostAlias) {
+    if (!this._tunnels.has(hostAlias)) throw new Error('Machine not initialzed. Connect first.');
+    await this._installHooks(hostAlias);
+  }
+
   disconnect(hostAlias) {
     const tunnel = this._tunnels.get(hostAlias);
     if (!tunnel) return;
