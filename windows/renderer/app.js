@@ -8,6 +8,10 @@
 let currentView = 'sessions'; // 'sessions' | 'settings'
 let sessions = [];
 let config = {};
+let sshHosts = [];          // hosts from SSH config
+let remoteHosts = [];       // managed remote hosts
+let remoteStatuses = {};    // { alias: status }
+let authPendingAlias = null; // alias waiting for auth retry
 
 // ─── Phase Display Labels ───────────────────────────────────────
 
@@ -32,6 +36,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Load initial data
   sessions = await window.claudeIsland.getSessions();
   config = await window.claudeIsland.getConfig();
+  sshHosts = await window.claudeIsland.getSshHosts();
+  remoteHosts = await window.claudeIsland.getRemoteHosts();
+  remoteStatuses = await window.claudeIsland.getRemoteStatuses();
 
   renderSessions();
   updateStatusDot();
@@ -49,6 +56,28 @@ document.addEventListener('DOMContentLoaded', async () => {
     config = newConfig;
     renderSettings();
   });
+
+  // Listen for remote status changes
+  window.claudeIsland.onRemoteStatusChanged(({ alias, status, message }) => {
+    remoteStatuses[alias] = status;
+    renderRemoteHosts();
+  });
+
+  // Listen for SSH auth required
+  window.claudeIsland.onRemoteAuthRequired(({ alias }) => {
+    showAuthDialog(alias);
+  });
+
+  // Listen for SSH config host list changes
+  window.claudeIsland.onSshHostsChanged((hosts) => {
+    sshHosts = hosts;
+    renderRemoteHosts();
+  });
+
+  // Update SSH config path hint
+  const configPath = await window.claudeIsland.getSshConfigPath();
+  const hint = document.getElementById('sshConfigPathHint');
+  if (hint) hint.textContent = `SSH Config: ${configPath}`;
 
   // UI event handlers
   document.getElementById('settingsBtn').addEventListener('click', toggleSettings);
@@ -74,6 +103,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   notifToggle.addEventListener('change', () => {
     window.claudeIsland.setConfig('enableNotifications', notifToggle.checked);
   });
+
+  // Auth dialog buttons
+  document.getElementById('authDialogCopyBtn').addEventListener('click', () => {
+    navigator.clipboard.writeText('ssh-add').catch(() => {});
+  });
+  document.getElementById('authDialogRetryBtn').addEventListener('click', async () => {
+    hideAuthDialog();
+    if (authPendingAlias) {
+      await window.claudeIsland.retryRemote(authPendingAlias);
+    }
+  });
+  document.getElementById('authDialogDismissBtn').addEventListener('click', hideAuthDialog);
 });
 
 // ─── View Switching ─────────────────────────────────────────────
@@ -165,6 +206,11 @@ function createSessionCard(session) {
   const cwd = shortenPath(session.cwd);
   const timeAgo = formatTimeAgo(session.lastEventAt);
 
+  // Remote host badge
+  const hostBadge = session.hostname && session.isRemote
+    ? `<div class="session-host">🌐 ${escapeHtml(session.hostname)}</div>`
+    : '';
+
   let toolInfo = '';
   if (session.lastTool && session.phase !== 'ended') {
     toolInfo = `
@@ -236,6 +282,7 @@ function createSessionCard(session) {
       </div>
       <span class="session-phase-label ${session.phase}">${phaseLabel}</span>
     </div>
+    ${hostBadge}
     <div class="session-cwd" title="${escapeHtml(session.cwd || '')}">${escapeHtml(cwd)}</div>
     ${toolInfo}
     ${permissionSection}
@@ -278,6 +325,7 @@ async function handleArchive(sessionId) {
 
 function renderSettings() {
   renderPaths();
+  renderRemoteHosts();
   document.getElementById('portInput').value = config.port || 51515;
   document.getElementById('notifToggle').checked = config.enableNotifications !== false;
 }
@@ -353,7 +401,108 @@ async function refreshHookStatus() {
   }).join('');
 }
 
-// ─── Utilities ──────────────────────────────────────────────────
+// ─── Remote Hosts ───────────────────────────────────────────────
+
+const STATUS_LABELS = {
+  idle: { label: 'Idle', cls: 'status-idle' },
+  connecting: { label: 'Connecting…', cls: 'status-connecting' },
+  installing_hooks: { label: 'Installing…', cls: 'status-connecting' },
+  connected: { label: 'Connected', cls: 'status-connected' },
+  auth_required: { label: 'Auth Required', cls: 'status-error' },
+  port_conflict: { label: 'Port Conflict', cls: 'status-error' },
+  error: { label: 'Error', cls: 'status-error' },
+  disconnecting: { label: 'Disconnecting', cls: 'status-idle' },
+};
+
+function renderRemoteHosts() {
+  const container = document.getElementById('remoteHostsList');
+  if (!container) return;
+
+  // Merge SSH config hosts with managed remote hosts
+  const managedAliases = new Set(remoteHosts.map(h => h.alias));
+  const allAliases = [
+    ...remoteHosts.map(h => h.alias),
+    ...sshHosts.filter(h => !managedAliases.has(h.alias)).map(h => h.alias),
+  ];
+
+  if (allAliases.length === 0) {
+    container.innerHTML = '<p class="settings-hint">No hosts found in SSH config.</p>';
+    return;
+  }
+
+  container.innerHTML = allAliases.map(alias => {
+    const status = remoteStatuses[alias] || 'idle';
+    const { label, cls } = STATUS_LABELS[status] || STATUS_LABELS.idle;
+    const isConnected = status === 'connected';
+    const isError = status === 'auth_required' || status === 'error' || status === 'port_conflict';
+
+    const actionBtn = isConnected
+      ? `<button class="btn btn-ghost btn-sm" onclick="disconnectHost('${alias}')" title="Disconnect">Disconnect</button>`
+      : isError
+        ? `<button class="btn btn-outline btn-sm" onclick="retryHost('${alias}')" title="Retry">Retry</button>`
+        : `<button class="btn btn-primary btn-sm" onclick="connectHost('${alias}')" title="Connect">Connect</button>`;
+
+    const removeBtn = managedAliases.has(alias)
+      ? `<button class="btn btn-ghost btn-sm remote-remove-btn" onclick="removeHost('${alias}')" title="Remove">✕</button>`
+      : '';
+
+    return `
+      <div class="remote-host-row">
+        <div class="remote-host-info">
+          <span class="remote-status-dot ${cls}"></span>
+          <span class="remote-host-alias">${escapeHtml(alias)}</span>
+          <span class="remote-status-label ${cls}">${label}</span>
+        </div>
+        <div class="remote-host-actions">
+          ${actionBtn}
+          ${removeBtn}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function connectHost(alias) {
+  remoteStatuses[alias] = 'connecting';
+  renderRemoteHosts();
+  await window.claudeIsland.connectRemote(alias);
+}
+
+async function disconnectHost(alias) {
+  await window.claudeIsland.disconnectRemote(alias);
+  remoteStatuses[alias] = 'idle';
+  renderRemoteHosts();
+}
+
+async function retryHost(alias) {
+  remoteStatuses[alias] = 'connecting';
+  renderRemoteHosts();
+  await window.claudeIsland.retryRemote(alias);
+}
+
+async function removeHost(alias) {
+  await window.claudeIsland.removeRemoteHost(alias);
+  remoteHosts = remoteHosts.filter(h => h.alias !== alias);
+  delete remoteStatuses[alias];
+  renderRemoteHosts();
+}
+
+// ─── Auth Dialog ────────────────────────────────────────────────
+
+function showAuthDialog(alias) {
+  authPendingAlias = alias;
+  const dialog = document.getElementById('authDialog');
+  const title = document.getElementById('authDialogTitle');
+  if (title) title.textContent = `${alias} — Authentication Required`;
+  if (dialog) dialog.classList.remove('hidden');
+}
+
+function hideAuthDialog() {
+  authPendingAlias = null;
+  const dialog = document.getElementById('authDialog');
+  if (dialog) dialog.classList.add('hidden');
+}
+
 
 function shortenPath(p) {
   if (!p) return '';

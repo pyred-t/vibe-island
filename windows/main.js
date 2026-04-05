@@ -9,6 +9,7 @@ const { app, BrowserWindow, ipcMain, screen, dialog } = require('electron');
 const path = require('path');
 
 let configStore, hookServer, SessionStore, SessionPhase, hookInstaller, trayManager, notification;
+let sshConfigReader, tunnelManager, TunnelStatus, remoteHostStore;
 
 let mainWindow = null;
 let isQuitting = false;
@@ -35,7 +36,7 @@ function createWindow() {
   const { width: screenWidth, height: screenHeight } = screen.getPrimaryDisplay().workAreaSize;
 
   const winWidth = 420;
-  const winHeight = 520;
+  const winHeight = 560;
 
   // Position at bottom-right, above the taskbar
   const x = screenWidth - winWidth - 12;
@@ -175,6 +176,48 @@ function setupIPC() {
     if (result.canceled || result.filePaths.length === 0) return null;
     return result.filePaths[0];
   });
+
+  // ─── Remote Host IPC ──────────────────────────────────────────
+
+  ipcMain.handle('get-ssh-hosts', () => sshConfigReader.getHosts());
+  ipcMain.handle('get-ssh-config-path', () => sshConfigReader.getConfigPath());
+
+  ipcMain.handle('get-remote-hosts', () => remoteHostStore.getAll());
+  ipcMain.handle('get-remote-statuses', () => tunnelManager.getAllStatuses());
+
+  ipcMain.handle('connect-remote', async (_event, alias, port) => {
+    remoteHostStore.addHost(alias, { port: port || 51515, autoConnect: true });
+    try {
+      await tunnelManager.connect(alias, port || 51515);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('disconnect-remote', (_event, alias) => {
+    tunnelManager.disconnect(alias);
+    remoteHostStore.setAutoConnect(alias, false);
+    return true;
+  });
+
+  ipcMain.handle('remove-remote-host', (_event, alias) => {
+    tunnelManager.disconnect(alias);
+    remoteHostStore.removeHost(alias);
+    return true;
+  });
+
+  ipcMain.handle('retry-remote', async (_event, alias) => {
+    const hosts = remoteHostStore.getAll();
+    const host = hosts.find(h => h.alias === alias);
+    const p = host?.port || 51515;
+    try {
+      await tunnelManager.connect(alias, p);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
 }
 
 // ─── Event Wiring ────────────────────────────────────────────
@@ -205,8 +248,8 @@ function wireEvents() {
 
   // Session store → Notifications
   SessionStore.on('sessionCreated', (session) => {
-    console.log(`[Session] New session: ${session.sessionId} cwd=${session.cwd}`);
-    // Auto-show window when a new session is created
+    const hostLabel = session.isRemote ? session.hostname : 'local';
+    console.log(`[Session] New session: ${session.sessionId} host=${hostLabel} cwd=${session.cwd}`);
     showWindow();
   });
 
@@ -230,6 +273,29 @@ function wireEvents() {
       notification.setEnabled(value);
     }
   });
+
+  // Tunnel manager → Window
+  tunnelManager.on('statusChanged', (alias, status, message) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('remote-status-changed', { alias, status, message });
+    }
+    if (status === TunnelStatus.AUTH_REQUIRED) {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('remote-auth-required', { alias, message });
+      }
+      showWindow();
+    }
+    if (status === TunnelStatus.CONNECTED) {
+      remoteHostStore.markConnected(alias);
+    }
+  });
+
+  // SSH config changes → Window
+  sshConfigReader.on('changed', (hosts) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('ssh-hosts-changed', hosts);
+    }
+  });
 }
 
 // ─── App Lifecycle ───────────────────────────────────────────
@@ -244,9 +310,18 @@ app.whenReady().then(() => {
   hookInstaller = require('./src/hook-installer');
   trayManager = require('./src/tray-manager');
   notification = require('./src/notification');
+  sshConfigReader = require('./src/ssh-config-reader');
+  const tunnelModule = require('./src/tunnel-manager');
+  tunnelManager = tunnelModule.TunnelManager;
+  TunnelStatus = tunnelModule.TunnelStatus;
+  remoteHostStore = require('./src/remote-host-store');
 
   // Load configuration
   configStore.load();
+  remoteHostStore.init(configStore);
+
+  // Start watching SSH config for host list updates
+  sshConfigReader.watch();
 
   // Setup notification preferences
   notification.setEnabled(configStore.get('enableNotifications'));
@@ -270,8 +345,16 @@ app.whenReady().then(() => {
   const port = configStore.get('port') || 51515;
   hookServer.start(port);
 
-  // Install hooks on first launch
+  // Install hooks on local paths
   hookInstaller.installAll();
+
+  // Auto-connect remote hosts from last session
+  const autoHosts = remoteHostStore.getAutoConnect();
+  for (const host of autoHosts) {
+    tunnelManager.connect(host.alias, host.port).catch(err => {
+      console.warn(`[Remote] Auto-connect failed for ${host.alias}:`, err.message);
+    });
+  }
 
   // Periodic session cleanup (remove ended sessions after 5 minutes)
   setInterval(() => SessionStore.cleanup(300000), 60000);
@@ -282,6 +365,8 @@ app.on('before-quit', () => {
 });
 
 app.on('will-quit', () => {
+  tunnelManager.disconnectAll();
+  sshConfigReader.unwatch();
   hookServer.stop();
   trayManager.destroy();
 });

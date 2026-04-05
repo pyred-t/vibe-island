@@ -81,10 +81,37 @@
               <span class="toggle-slider"></span>
             </label>
           </div>
+
+          <h3 class="settings-section-title" style="margin-top:20px">Remote Hosts</h3>
+          <p class="settings-hint" id="sshConfigPathHint">Loading SSH config...</p>
+          <div id="remoteHostsList" class="remote-hosts-list"></div>
+          <p class="settings-hint" style="margin-top:6px">
+            💡 Hosts from your SSH config appear here automatically. Connect to install hooks and open a tunnel.
+          </p>
         </div>
       </div>
     </div>
   </div>
+
+  <!-- Auth Required Dialog -->
+  <div id="authDialog" class="auth-dialog hidden">
+    <div class="auth-dialog-card">
+      <div class="auth-dialog-icon">⚠</div>
+      <div class="auth-dialog-title" id="authDialogTitle">Authentication Required</div>
+      <div class="auth-dialog-body">
+        Your SSH key needs to be added to the SSH Agent.<br>Run in any terminal:
+      </div>
+      <div class="auth-dialog-cmd">
+        <code id="authDialogCmd">ssh-add</code>
+        <button class="btn btn-ghost btn-sm" id="authDialogCopyBtn" title="Copy">Copy</button>
+      </div>
+      <div class="auth-dialog-actions">
+        <button class="btn btn-primary btn-sm" id="authDialogRetryBtn">Retry</button>
+        <button class="btn btn-ghost btn-sm" id="authDialogDismissBtn">Dismiss</button>
+      </div>
+    </div>
+  </div>
+
   <script src="app.js"></script>
 </body>
 </html>

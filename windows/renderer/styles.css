@@ -733,3 +733,184 @@ html, body {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
 }
+
+/* ─── Session Hostname Badge ─────────────────────────────────── */
+
+.session-host {
+  font-size: 10px;
+  color: var(--info);
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0.85;
+}
+
+/* ─── Remote Hosts List ──────────────────────────────────────── */
+
+.remote-hosts-list {
+  margin-bottom: 4px;
+}
+
+.remote-host-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 4px;
+  gap: 8px;
+  transition: background var(--transition-fast);
+}
+
+.remote-host-row:hover {
+  background: var(--bg-card-hover);
+}
+
+.remote-host-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.remote-host-alias {
+  font-size: 12px;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  color: var(--text-secondary);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.remote-host-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.remote-remove-btn {
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.remote-host-row:hover .remote-remove-btn {
+  opacity: 1;
+}
+
+/* Status dot */
+.remote-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.remote-status-dot.status-connected {
+  background: var(--success);
+  box-shadow: 0 0 6px var(--success-glow);
+}
+
+.remote-status-dot.status-connecting {
+  background: var(--info);
+  animation: blink 1s ease-in-out infinite;
+}
+
+.remote-status-dot.status-error {
+  background: var(--danger);
+}
+
+.remote-status-dot.status-idle {
+  background: var(--text-muted);
+}
+
+/* Status label */
+.remote-status-label {
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.remote-status-label.status-connected { color: var(--success); }
+.remote-status-label.status-connecting { color: var(--info); }
+.remote-status-label.status-error { color: var(--danger); }
+.remote-status-label.status-idle { color: var(--text-muted); }
+
+/* ─── Auth Required Dialog ───────────────────────────────────── */
+
+.auth-dialog {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(4px);
+  border-radius: var(--radius-xl);
+  animation: fadeIn 0.2s ease-out;
+}
+
+.auth-dialog.hidden {
+  display: none;
+}
+
+.auth-dialog-card {
+  background: var(--bg-secondary);
+  border: 1px solid rgba(245, 158, 11, 0.2);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  max-width: 320px;
+  width: 90%;
+  box-shadow: var(--shadow-lg), 0 0 0 1px rgba(245,158,11,0.05);
+  animation: fadeInUp 0.25s ease-out;
+}
+
+.auth-dialog-icon {
+  font-size: 24px;
+  margin-bottom: 12px;
+  color: var(--warning);
+}
+
+.auth-dialog-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 10px;
+}
+
+.auth-dialog-body {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin-bottom: 14px;
+}
+
+.auth-dialog-cmd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  margin-bottom: 16px;
+  gap: 8px;
+}
+
+.auth-dialog-cmd code {
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 12px;
+  color: var(--text-accent);
+  flex: 1;
+}
+
+.auth-dialog-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}

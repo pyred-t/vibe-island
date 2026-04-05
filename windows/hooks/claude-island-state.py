@@ -184,6 +184,10 @@ def main():
         "pid": claude_pid,
         "tty": tty,
         "agent_id": AGENT_ID,
+        "hostname": socket.gethostname(),
+        "is_remote": bool(
+            os.environ.get("SSH_CLIENT") or os.environ.get("SSH_TTY")
+        ),
         "raw_payload": data,
     }
 

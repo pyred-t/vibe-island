@@ -48,4 +48,30 @@ contextBridge.exposeInMainWorld('claudeIsland', {
 
   // Dialog
   selectDirectory: () => ipcRenderer.invoke('select-directory'),
+
+  // Remote SSH hosts
+  getSshHosts: () => ipcRenderer.invoke('get-ssh-hosts'),
+  getSshConfigPath: () => ipcRenderer.invoke('get-ssh-config-path'),
+  getRemoteHosts: () => ipcRenderer.invoke('get-remote-hosts'),
+  getRemoteStatuses: () => ipcRenderer.invoke('get-remote-statuses'),
+  connectRemote: (alias, port) => ipcRenderer.invoke('connect-remote', alias, port),
+  disconnectRemote: (alias) => ipcRenderer.invoke('disconnect-remote', alias),
+  removeRemoteHost: (alias) => ipcRenderer.invoke('remove-remote-host', alias),
+  retryRemote: (alias) => ipcRenderer.invoke('retry-remote', alias),
+
+  onRemoteStatusChanged: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('remote-status-changed', handler);
+    return () => ipcRenderer.removeListener('remote-status-changed', handler);
+  },
+  onRemoteAuthRequired: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('remote-auth-required', handler);
+    return () => ipcRenderer.removeListener('remote-auth-required', handler);
+  },
+  onSshHostsChanged: (callback) => {
+    const handler = (_event, hosts) => callback(hosts);
+    ipcRenderer.on('ssh-hosts-changed', handler);
+    return () => ipcRenderer.removeListener('ssh-hosts-changed', handler);
+  },
 });

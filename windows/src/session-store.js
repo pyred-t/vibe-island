@@ -43,6 +43,8 @@ class SessionStore extends EventEmitter {
     if (event.pid) session.pid = event.pid;
     if (event.tty) session.tty = event.tty;
     if (event.agent_id) session.agentId = event.agent_id;
+    if (event.hostname) session.hostname = event.hostname;
+    if (event.is_remote !== undefined) session.isRemote = event.is_remote;
     session.lastEventAt = new Date();
     session.lastEvent = event.event;
 
@@ -118,6 +120,8 @@ class SessionStore extends EventEmitter {
       cwd: event.cwd || '',
       pid: event.pid || null,
       tty: event.tty || null,
+      hostname: event.hostname || null,
+      isRemote: event.is_remote || false,
       phase: SessionPhase.IDLE,
       lastEvent: null,
       lastEventAt: new Date(),
