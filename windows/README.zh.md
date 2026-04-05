@@ -11,8 +11,9 @@
 - 🔐 **权限审批** — 直接点击 Allow / Always Allow / Deny，无需切回终端
 - 🔔 **Windows 通知** — 会话需要关注时弹出 Toast 提醒
 - 🐧 **WSL 支持** — 支持在 WSL 中运行的 Claude Code（通过 WSL2 localhost 转发）
-- 📁 **路径配置** — 可添加任意 `.claude` 目录，包括 `\\wsl$\Ubuntu\home\user\.claude` 等 WSL 路径
-- ⚙️ **自动安装 Hook** — 自动将 Python hook 脚本写入 Claude Code 的 `settings.json`
+- 🌐 **远程 SSH 支持** — 通过安全的反向 SSH 隧道监控远程 Linux 服务器上的 Claude Code
+- ⚙️ **机器中心化配置** — 统一管理多个本地和远程环境，支持独立的 Claude 路径配置
+- 🔄 **自动 Hook 同步** — 在连接时自动向本地和远程机器部署并配置 Hook 脚本
 
 ## 环境要求
 
@@ -22,6 +23,7 @@
 | Node.js | 18+ |
 | Python | 3.8+ |
 | Claude Code | 任意版本 |
+| OpenSSH | Windows 原生 SSH 客户端 |
 
 ## 快速开始
 
@@ -33,22 +35,39 @@ start.bat
 
 首次启动时，应用会自动：
 1. 在端口 `51515` 启动 TCP Hook 服务器
-2. 自动检测 Claude Code 路径（Windows 原生及 WSL）
-3. 向所有检测到的 `~/.claude/` 目录安装 hook 脚本
-4. 显示系统托盘图标 — 点击即可打开面板
+2. 自动检测本地 Claude Code 路径（Windows 原生及 WSL）
+3. 显示系统托盘图标 — 点击即可打开面板并管理你的 **Machines（机器）**
 
 ## 工作原理
 
+### 本地模式 (Windows / WSL)
 ```
 Claude Code CLI  ──►  Hook 脚本（Python）  ──►  TCP 127.0.0.1:51515  ──►  Claude Island App
 （Win 原生或 WSL）     ~/.claude/hooks/         （后台服务器）              托盘 + 弹出面板
 ```
 
-### Hook 脚本
+### 远程模式 (SSH)
+```
+远程 Claude CLI  ──►  Hook 脚本（Python）  ──►  SSH 反向隧道  ──►  TCP 127.0.0.1:51515  ──►  Claude Island App
+（Linux 服务器）       ~/.claude/hooks/       (51515 端口转发)      (Windows 宿主机)           托盘 + 弹出面板
+```
 
-hook 脚本 `hooks/claude-island-state.py` 安装在 `~/.claude/hooks/`，由 Claude Code 在每个事件（会话开始/结束、工具调用、权限请求等）时触发调用。它通过 TCP 而非 Unix Socket 与应用通信，兼容 Windows 原生和 WSL 两种环境。
+**SSH 隧道机制：** 应用使用系统原生的 `ssh` 客户端建立反向隧道（`-R`）。在建立连接前会自动清理远程残留端口（`fuser -k`），确保重连稳定性。同时强制开启 TCP `NoDelay` 以消除网络缓冲导致的指令审批延迟。
 
-**WSL 说明：** WSL2 会自动将 `localhost` 转发到 Windows 宿主机，WSL 中的 Claude Code 可直接通过 `127.0.0.1:51515` 连接到 Windows 应用。
+## 机器管理 (Machine Management)
+
+Claude Island 按照 **Machine** 维度组织配置：
+
+### 🖥️ Local Machine（本地机器）
+自动追踪 Windows 和 WSL 环境。支持手动添加如 `\\wsl$\Ubuntu\home\user\.claude` 的自定义路径。
+
+### 🌐 Remote SSH Machines（远程机器）
+- **从 SSH Config 导入**：自动扫描 `~/.ssh/config` 中的主机配置。
+- **手动添加**：支持通过别名或 `user@hostname` 手动输入远程主机。
+- **全自动同步**：点击 **Connect** 时，应用会自动：
+    1. 将最新的 Python Hook 脚本上传到远程机器。
+    2. 自动配置远程 `~/.claude/settings.json` 以连接桥接。
+    3. 建立安全的反向 SSH 隧道。
 
 ## 配置
 
@@ -56,82 +75,44 @@ hook 脚本 `hooks/claude-island-state.py` 安装在 `~/.claude/hooks/`，由 Cl
 
 | 设置项 | 说明 |
 |--------|------|
-| **Claude Code 路径** | Claude Code 配置目录列表，可添加 WSL 路径 |
-| **TCP 端口** | Hook 通信端口（默认 `51515`）|
+| **Machines** | 添加/删除本地路径，或连接管理远程 SSH 主机 |
+| **TCP 端口** | Hook 通信端口（默认 `51515`），远程隧道亦共用此端口 |
 | **通知** | 开关 Windows Toast 通知 |
-
-### 添加 WSL 路径
-
-1. 打开设置 → 点击 **Add Path**
-2. 浏览到 `\\wsl$\<发行版名>\home\<用户名>\.claude`
-3. 点击 **Install / Reinstall Hooks**
-
-写入 hook 命令时，应用会自动将 Windows UNC 路径转换为 WSL 内部路径，Claude Code 在 WSL 中会看到脚本位于 `/home/<用户名>/.claude/hooks/claude-island-state.py`。
-
-## 启动方式
-
-必须通过 `start.bat` 启动（而非 `npm start`），因为部分工具会设置 `ELECTRON_RUN_AS_NODE` 环境变量，该变量会破坏 Electron API 的加载。
-
-```bat
-windows\start.bat
-```
-
-## 开发与测试
-
-```bat
-# 启动应用
-start.bat
-
-# 在另一个终端模拟完整会话生命周期
-node test/send-test-event.js all
-
-# 测试特定事件类型
-node test/send-test-event.js permission   # 等待你点击 Allow/Deny
-node test/send-test-event.js processing
-node test/send-test-event.js waiting
-
-# 验证 Windows 编码处理（中文路径、非 ASCII 内容）
-python test/test-encoding.py
-```
 
 ## 常见问题
 
 | 问题 | 解决方案 |
 |------|----------|
 | 托盘图标没出现 | 使用 `start.bat` 启动，确认 `ELECTRON_RUN_AS_NODE` 未被设置 |
-| 会话没有显示 | 设置 → Hooks → 点击 **Install / Reinstall Hooks** |
-| Windows 下状态不准确 | 已修复：hook 脚本现在强制使用 UTF-8 读写 stdin/stdout，解决了中文路径和非 ASCII 工具输出导致的解析失败 |
-| WSL 会话未连接 | 确认使用的是 WSL2（WSL1 不支持 localhost 转发）|
-| 端口冲突 | 在设置面板修改端口，重新安装 Hook 后生效 |
+| 远程 SSH 连接超时 | 确保本地 `ssh` 客户端可用，且在终端能正常登录该主机 |
+| SSH 认证失败 | 如果私钥有密码，请先在终端运行 `ssh-add` 将密钥加入 agent |
+| 远程指令响应慢 | 已修复：通过禁用 TCP Nagle 算法（NoDelay）彻底消除了网络缓冲延迟 |
+| 远程回传空回复 | 已修复：反向隧道现在显式绑定到 `127.0.0.1` 以避免 IPv6 匹配冲突 |
+| 端口 51515 冲突 | 已修复：应用会在启动新隧道前自动杀掉远程残留的监听进程 |
 
 ## 项目结构
 
 ```
 windows/
-├── main.js              # Electron 主进程
-├── preload.js           # 安全 IPC 桥接（contextBridge）
-├── start.bat            # 启动脚本（清除 ELECTRON_RUN_AS_NODE）
+├── main.js              # Electron 主进程及 IPC 路由
 ├── src/
-│   ├── config-store.js  # 配置持久化（存储在 AppData/Roaming/ClaudeIsland/）
-│   ├── hook-server.js   # TCP 服务器，接收 hook 事件，保持权限请求连接
+│   ├── config-store.js  # 以机器为中心的配置持久化
+│   ├── tunnel-manager.js # SSH 反向隧道管理及远程 Hook 自动部署
+│   ├── hook-server.js   # 高性能 TCP 服务器（NoDelay 优化）
 │   ├── session-store.js # 会话状态机
-│   ├── hook-installer.js # 安装 hook 脚本到 Claude Code settings.json
-│   ├── tray-manager.js  # 系统托盘图标，程序化生成状态指示色
-│   └── notification.js  # Windows Toast 通知
+│   ├── ssh-config-reader.js # 解析 ~/.ssh/config 方便导入主机
+│   ├── tray-manager.js  # 系统托盘图标及状态管理
+│   └── hook-installer.js # 本地 Hook 部署逻辑 (Win/WSL)
 ├── renderer/
-│   ├── index.html       # 弹出面板 HTML
-│   ├── styles.css       # 深色主题，玻璃拟物 + 微动画
-│   └── app.js           # 前端逻辑：会话列表、权限操作、设置面板
+│   ├── index.html       # 玻璃拟物 UI 面板
+│   └── app.js           # 机器管理及会话交互逻辑
 ├── hooks/
-│   └── claude-island-state.py  # TCP 版 hook 脚本（Windows + WSL 兼容）
-└── test/
-    ├── send-test-event.js  # 通过 TCP 模拟发送 hook 事件
-    ├── diag-connection.py  # 连接诊断工具
-    └── test-encoding.py    # 验证 Windows GBK→UTF-8 编码修复
+│   └── claude-island-state.py  # 高性能 Python 桥接脚本
+└── start.bat            # 纯净启动环境
 ```
 
 ## 已知限制
 
-- 权限审批 UI 会自动弹窗，但若错过，Hook 在 5 分钟后超时，工具调用将在无审批的情况下继续
-- 需要在 Claude Code 启动会话前先运行本应用，Hook 才能正常连接
-- 暂未实现开机自启（计划中）
+- **SSH Agent**：如果私钥受密码保护且未加入 agent，连接可能会在后台静默失败。
+- **ProxyJump**：完全支持原生 SSH 配置，但需确保跳板机稳定性。
+- **WSL1**：不支持自动 localhost 转发，强烈建议升级到 WSL2。

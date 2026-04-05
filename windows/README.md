@@ -11,8 +11,9 @@ Inspired by the macOS [Vibe Island](https://github.com/anthropics/vibe-island) D
 - 🔐 **Permission Approvals** — Allow / Always Allow / Deny tool calls without switching terminal
 - 🔔 **Windows Notifications** — Toast alerts when sessions need attention
 - 🐧 **WSL Support** — Works with Claude Code running inside WSL (WSL2 localhost forwarding)
-- 📁 **Configurable Paths** — Add any `.claude` directory, including WSL paths like `\\wsl$\Ubuntu\home\user\.claude`
-- ⚙️ **Auto Hook Install** — Automatically installs Python hook scripts into Claude Code's `settings.json`
+- 🌐 **Remote SSH Support** — Monitor Claude Code on remote Linux servers via secure reverse SSH tunnels
+- ⚙️ **Machine-Centric Config** — Manage multiple local and remote environments with separate Claude paths
+- 🔄 **Auto Hook Sync** — Automatically deploys and configures hook scripts to local and remote machines
 
 ## Requirements
 
@@ -22,6 +23,7 @@ Inspired by the macOS [Vibe Island](https://github.com/anthropics/vibe-island) D
 | Node.js     | 18+     |
 | Python      | 3.8+    |
 | Claude Code | Any     |
+| OpenSSH     | Native Windows Client |
 
 ## Quick Start
 
@@ -33,22 +35,39 @@ start.bat
 
 On first launch the app will:
 1. Start a TCP hook server on port `51515`
-2. Auto-detect Claude Code paths (Windows + WSL)
-3. Install hook scripts into all detected `~/.claude/` directories
-4. Show a tray icon — click it to open the panel
+2. Auto-detect local Claude Code paths (Windows + WSL)
+3. Show a tray icon — click it to open the panel and manage your **Machines**
 
 ## How It Works
 
+### Local (Windows / WSL)
 ```
 Claude Code CLI  ──►  Hook Script (Python)  ──►  TCP 127.0.0.1:51515  ──►  Claude Island App
   (Win or WSL)         ~/.claude/hooks/             (background server)       Tray + Popup Panel
 ```
 
-### Hook Script
+### Remote (SSH)
+```
+Remote Claude CLI ──► Hook Script (Python) ──► SSH Reverse Tunnel ──► TCP 127.0.0.1:51515 ──► Claude Island App
+ (Linux Server)        ~/.claude/hooks/         (Port 51515 Rwd)       (Windows Host)         Tray + Popup Panel
+```
 
-The hook script `hooks/claude-island-state.py` is installed to `~/.claude/hooks/` and called by Claude Code for every event (session start/end, tool use, permission requests, etc.). It communicates back to the app via TCP instead of a Unix socket, making it compatible with both Windows native and WSL environments.
+**SSH Tunneling:** The app uses your native `ssh` client to establish a reverse tunnel (`-R`). It automatically cleans up stale remote ports (`fuser -k`) to ensure stable reconnections. TCP Nagle's algorithm is disabled (`NoDelay`) to ensure instantaneous tool approval response times across the network.
 
-**WSL note:** WSL2 automatically mirrors `localhost` to the Windows host, so Claude Code running in WSL connects to the Windows app transparently via `127.0.0.1:51515`.
+## Machine Management
+
+Claude Island organizes configuration by **Machine**:
+
+### 🖥️ Local Machine
+Automatically tracks your Windows and WSL environments. You can manually add paths like `\\wsl$\Ubuntu\home\user\.claude`.
+
+### 🌐 Remote SSH Machines
+- **Import from SSH Config**: Automatically scans your `~/.ssh/config` for hosts.
+- **Custom Add**: Manually add hosts by alias or `user@hostname`.
+- **Auto-Sync**: When you click **Connect**, the app automatically:
+    1. Uploads the latest Python hook script to the remote machine.
+    2. Configures the remote `~/.claude/settings.json` to use the bridge.
+    3. Establishes the secure reverse tunnel.
 
 ## Configuration
 
@@ -56,82 +75,44 @@ Click the **⚙️** gear icon in the panel to open Settings:
 
 | Setting | Description |
 |---------|-------------|
-| **Claude Code Paths** | Directories where Claude Code stores its config. Add WSL paths here. |
-| **TCP Port** | Port for hook communication (default: `51515`) |
-| **Notifications** | Enable/disable Windows toast notifications |
-
-### Adding a WSL Path
-
-1. Open Settings → click **Add Path**
-2. Browse to `\\wsl$\<DistroName>\home\<username>\.claude`
-3. Click **Install / Reinstall Hooks**
-
-The app converts the path to a WSL-internal path when writing the hook command, so Claude Code inside WSL sees the script at `/home/<username>/.claude/hooks/claude-island-state.py`.
-
-## Launching
-
-The app must be started via `start.bat` (not `npm start`) because the `ELECTRON_RUN_AS_NODE` environment variable — set by some tools — breaks Electron API loading.
-
-```bat
-windows\start.bat
-```
-
-## Development & Testing
-
-```bat
-# Start the app
-start.bat
-
-# Simulate a full session lifecycle (in another terminal)
-node test/send-test-event.js all
-
-# Test a specific event type
-node test/send-test-event.js permission   # waits for your Approve/Deny click
-node test/send-test-event.js processing
-node test/send-test-event.js waiting
-
-# Test Windows encoding handling (Chinese paths, non-ASCII content)
-python test/test-encoding.py
-```
+| **Machines** | Add/Remove local paths or connect to remote SSH hosts. |
+| **TCP Port** | Port for hook communication (default: `51515`). Remote tunnels use this same port. |
+| **Notifications** | Enable/disable Windows toast notifications. |
 
 ## Troubleshooting
 
 | Problem | Fix |
 |---------|-----|
 | Tray icon doesn't appear | Use `start.bat`, not `npm start`. Make sure `ELECTRON_RUN_AS_NODE` is not set. |
-| Sessions don't show up | Open Settings → Hooks → click **Install / Reinstall Hooks** |
-| Wrong status on Windows | Already fixed: the hook script now forces UTF-8 stdin/stdout to handle Chinese paths and non-ASCII tool output |
-| WSL sessions not connecting | Confirm you're on WSL2 (not WSL1). WSL1 doesn't forward localhost. |
-| Port conflict | Change the port in Settings; it updates `settings.json` on next hook install |
+| Remote SSH Timeout | Ensure your local machine has a functional `ssh` client and can reach the host via terminal. |
+| SSH Auth Fails | Use `ssh-add` in a terminal to add your private keys to the SSH agent before connecting. |
+| Remote Hook Delay | Fixed: TCP NoDelay is now enforced to eliminate network buffering latency. |
+| Empty reply from server | Fixed: Reverse tunnels are now explicitly bound to `127.0.0.1` to avoid IPv6 mismatches. |
+| Port 51515 Conflict | The app now automatically kills stale remote listeners before starting a new tunnel. |
 
 ## File Structure
 
 ```
 windows/
-├── main.js              # Electron main process
-├── preload.js           # Secure IPC bridge (contextBridge)
-├── start.bat            # Launch script (clears ELECTRON_RUN_AS_NODE)
+├── main.js              # Electron main process & IPC routing
 ├── src/
-│   ├── config-store.js  # Settings persistence (~AppData/Roaming/ClaudeIsland/)
-│   ├── hook-server.js   # TCP server — receives hook events, holds permission sockets
+│   ├── config-store.js  # Machine-centric settings persistence
+│   ├── tunnel-manager.js # SSH reverse tunnel & remote hook deployment
+│   ├── hook-server.js   # TCP server with Low-Latency (NoDelay) optimization
 │   ├── session-store.js # Session state machine
-│   ├── hook-installer.js # Installs hook scripts into Claude Code settings.json
-│   ├── tray-manager.js  # System tray icon with programmatic status indicator
-│   └── notification.js  # Windows toast notifications
+│   ├── ssh-config-reader.js # Parses ~/.ssh/config for easy host import
+│   ├── tray-manager.js  # System tray icon with live status
+│   └── hook-installer.js # Local hook deployment (Win/WSL)
 ├── renderer/
-│   ├── index.html       # Popup panel HTML
-│   ├── styles.css       # Dark theme with glassmorphism & animations
-│   └── app.js           # Frontend: session list, permissions, settings UI
+│   ├── index.html       # Popup panel with glassmorphism UI
+│   └── app.js           # Machine management & Session UI logic
 ├── hooks/
-│   └── claude-island-state.py  # TCP hook script (Windows + WSL compatible)
-└── test/
-    ├── send-test-event.js  # Simulate hook events via TCP
-    ├── diag-connection.py  # Connectivity diagnostic
-    └── test-encoding.py    # Verify Windows GBK→UTF-8 encoding fix
+│   └── claude-island-state.py  # High-performance Python bridge
+└── start.bat            # Clean launch environment
 ```
 
 ## Known Limitations
 
-- Permission approval UI auto-shows the window, but if you miss it, the hook times out after 5 minutes and lets the tool proceed without approval
-- The app must be running before Claude Code starts a session for hooks to connect
-- Auto-start with Windows is not yet implemented (planned)
+- **SSH Agent**: Requires consistent use of `ssh-add` if keys are passphrase-protected.
+- **ProxyJump**: Fully supported via native SSH config, though requires stable jump host connectivity.
+- **WSL1**: Standard localhost mirroring is not available; upgrade to WSL2 is highly recommended.
