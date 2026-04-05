@@ -1,3 +1,10 @@
+# Windows / Node.js
+node_modules/
+windows/node_modules/
+*.pyc
+__pycache__/
+
+
 # Xcode
 build/
 DerivedData/

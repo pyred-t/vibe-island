@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claude Island</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div id="app" class="app">
+    <!-- Header -->
+    <div class="header" id="header">
+      <div class="header-left">
+        <div class="logo-dot" id="statusDot"></div>
+        <span class="header-title">Claude Island</span>
+      </div>
+      <div class="header-right">
+        <button class="icon-btn" id="settingsBtn" title="Settings">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M12 1v6M12 17v6M4.22 4.22l4.24 4.24M15.54 15.54l4.24 4.24M1 12h6M17 12h6M4.22 19.78l4.24-4.24M15.54 8.46l4.24-4.24"/>
+          </svg>
+        </button>
+        <button class="icon-btn" id="closeBtn" title="Close">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Main Content Area -->
+    <div class="content" id="content">
+      <!-- Sessions View (default) -->
+      <div class="view" id="sessionsView">
+        <div class="sessions-list" id="sessionsList">
+          <!-- Empty state -->
+          <div class="empty-state" id="emptyState">
+            <div class="empty-icon">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.4">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+              </svg>
+            </div>
+            <p class="empty-title">No Active Sessions</p>
+            <p class="empty-subtitle">Start Claude Code to see sessions here</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Settings View -->
+      <div class="view hidden" id="settingsView">
+        <div class="settings-content">
+          <h3 class="settings-section-title">Claude Code Paths</h3>
+          <p class="settings-hint">Configure where Claude Code stores its configuration. Add WSL paths like <code>\\wsl$\Ubuntu\home\user\.claude</code></p>
+          <div id="pathsList" class="paths-list"></div>
+          <button class="btn btn-outline btn-sm" id="addPathBtn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+            Add Path
+          </button>
+
+          <h3 class="settings-section-title" style="margin-top:20px">Hooks</h3>
+          <div id="hookStatus" class="hook-status"></div>
+          <button class="btn btn-primary btn-sm" id="installHooksBtn">Install / Reinstall Hooks</button>
+
+          <h3 class="settings-section-title" style="margin-top:20px">Server</h3>
+          <div class="setting-row">
+            <label>TCP Port</label>
+            <input type="number" id="portInput" class="setting-input" min="1024" max="65535" />
+          </div>
+
+          <h3 class="settings-section-title" style="margin-top:20px">Notifications</h3>
+          <div class="setting-row">
+            <label>Enable notifications</label>
+            <label class="toggle">
+              <input type="checkbox" id="notifToggle" />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
