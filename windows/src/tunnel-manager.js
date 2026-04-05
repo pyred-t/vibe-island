@@ -143,6 +143,12 @@ class TunnelManager extends EventEmitter {
       // Auth error will be detected by the tunnel stderr — proceed anyway
     }
 
+    // Kill any stale process on the remote port (left over from previous sessions)
+    try {
+      await this._sshExec(hostAlias,
+        `fuser -k ${port}/tcp 2>/dev/null; sleep 0.3; true`);
+    } catch { /* ignore if fuser not available */ }
+
     this._startTunnel(hostAlias);
   }
 
@@ -259,7 +265,6 @@ class TunnelManager extends EventEmitter {
       '-N', '-v',
       '-R', `${port}:localhost:${port}`,
       '-o', 'BatchMode=yes',
-      '-o', 'ExitOnForwardFailure=yes',
       '-o', 'StrictHostKeyChecking=accept-new',
       '-o', 'ServerAliveInterval=30',
       '-o', 'ServerAliveCountMax=3',
@@ -305,6 +310,13 @@ class TunnelManager extends EventEmitter {
       tunnel.retryCount++;
 
       console.log(`[TunnelManager] ${hostAlias} disconnected (code=${code}), retry in ${delay}ms`);
+      if (stderrBuf.trim()) {
+        // Print last 10 lines of SSH stderr to help diagnose
+        const lines = stderrBuf.trim().split('\n');
+        const tail = lines.slice(-10).join('\n');
+        console.log(`[TunnelManager] SSH stderr (last 10 lines):\n${tail}`);
+      }
+
       this._setStatus(hostAlias, TunnelStatus.CONNECTING,
         `Reconnecting in ${Math.round(delay / 1000)}s...`);
 
