@@ -284,15 +284,6 @@ function wireEvents() {
     }
   });
 
-  // Optimistic UI updates when user resolves permission/interaction
-  hookServer.on('permissionResolved', ({ sessionId, toolUseId }) => {
-    SessionStore.permissionApproved(sessionId, toolUseId); // Or denied, both transition phase to PROCESSING
-  });
-
-  hookServer.on('interactionResolved', ({ sessionId, toolUseId }) => {
-    SessionStore.interactionSubmitted(sessionId, toolUseId);
-  });
-
   // Session store → Window updates
   SessionStore.on('changed', (sessions) => {
     if (mainWindow && !mainWindow.isDestroyed()) {

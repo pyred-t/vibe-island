@@ -232,9 +232,9 @@ function createSessionCard(session) {
         ${preview ? `<div class="permission-tool-input">${escapeHtml(preview)}</div>` : ''}
       </div>
       <div class="permission-actions">
-        <button class="btn btn-success btn-sm" onclick="handleApprove('${session.sessionId}','${p.toolUseId}', this)">Allow</button>
-        <button class="btn btn-warning btn-sm" onclick="handleAlwaysAllow('${session.sessionId}','${p.toolUseId}', this)">Always</button>
-        <button class="btn btn-danger btn-sm" onclick="handleDeny('${session.sessionId}','${p.toolUseId}', this)">Deny</button>
+        <button class="btn btn-success btn-sm" onclick="handleApprove('${session.sessionId}','${p.toolUseId}')">Allow</button>
+        <button class="btn btn-warning btn-sm" onclick="handleAlwaysAllow('${session.sessionId}','${p.toolUseId}')">Always</button>
+        <button class="btn btn-danger btn-sm" onclick="handleDeny('${session.sessionId}','${p.toolUseId}')">Deny</button>
       </div>`;
   }
 
@@ -246,8 +246,8 @@ function createSessionCard(session) {
         <div class="interaction-question">${escapeHtml(q)}</div>
         <div class="interaction-input-row">
           <input type="text" class="interaction-input" id="interaction-${session.sessionId}"
-            onkeydown="if(event.key==='Enter')handleInteraction('${session.sessionId}','${session.activeInteraction.toolUseId}', event.target.nextElementSibling)">
-          <button class="btn btn-primary btn-sm" onclick="handleInteraction('${session.sessionId}','${session.activeInteraction.toolUseId}', this)">Send</button>
+            onkeydown="if(event.key==='Enter')handleInteraction('${session.sessionId}','${session.activeInteraction.toolUseId}')">
+          <button class="btn btn-primary btn-sm" onclick="handleInteraction('${session.sessionId}','${session.activeInteraction.toolUseId}')">Send</button>
         </div>
       </div>`;
   }
@@ -275,25 +275,20 @@ function createSessionCard(session) {
 
 // ─── Session Actions ────────────────────────────────────────────
 
-async function handleApprove(sessionId, toolUseId, btn) {
-  if (btn) { btn.disabled = true; btn.innerText = 'Allowing...'; }
+async function handleApprove(sessionId, toolUseId) {
   await window.claudeIsland.approvePermission(sessionId, toolUseId);
 }
-async function handleAlwaysAllow(sessionId, toolUseId, btn) {
-  if (btn) { btn.disabled = true; btn.innerText = 'Allowing...'; }
+async function handleAlwaysAllow(sessionId, toolUseId) {
   await window.claudeIsland.alwaysAllowPermission(sessionId, toolUseId);
 }
-async function handleDeny(sessionId, toolUseId, btn) {
-  if (btn) { btn.disabled = true; btn.innerText = 'Denying...'; }
+async function handleDeny(sessionId, toolUseId) {
   await window.claudeIsland.denyPermission(sessionId, toolUseId, 'Denied by user');
 }
-async function handleInteraction(sessionId, toolUseId, btn) {
+async function handleInteraction(sessionId, toolUseId) {
   const input = document.getElementById(`interaction-${sessionId}`);
   if (!input || !input.value.trim()) return;
-  const val = input.value.trim();
-  if (btn) { btn.disabled = true; btn.innerText = 'Sending...'; }
-  input.disabled = true;
-  await window.claudeIsland.submitInteraction(sessionId, toolUseId, { question: val });
+  await window.claudeIsland.submitInteraction(sessionId, toolUseId, { question: input.value.trim() });
+  input.value = '';
 }
 async function handleArchive(sessionId) {
   await window.claudeIsland.archiveSession(sessionId);
