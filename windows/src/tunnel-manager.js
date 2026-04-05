@@ -282,8 +282,7 @@ class TunnelManager extends EventEmitter {
       }
 
       if (stderrBuf.includes('Permission denied') ||
-          stderrBuf.includes('Authentication failed') ||
-          stderrBuf.includes('publickey,')) {
+          stderrBuf.includes('Authentication failed')) {
         this._setStatus(hostAlias, TunnelStatus.AUTH_REQUIRED,
           'SSH authentication failed. Add your key to SSH Agent.');
         this.emit('authRequired', hostAlias);
