@@ -21,6 +21,7 @@ class HookServer extends EventEmitter {
     if (this._server) return;
 
     this._server = net.createServer((socket) => {
+      socket.setNoDelay(true);
       this._handleClient(socket);
     });
 
@@ -201,8 +202,7 @@ class HookServer extends EventEmitter {
     const response = { decision, reason };
 
     try {
-      pending.socket.write(JSON.stringify(response));
-      pending.socket.end();
+      pending.socket.end(JSON.stringify(response));
       return true;
     } catch (err) {
       console.error('Failed to send permission response:', err);
@@ -226,8 +226,7 @@ class HookServer extends EventEmitter {
     const response = { decision: null, reason: null, updatedInput };
 
     try {
-      pending.socket.write(JSON.stringify(response));
-      pending.socket.end();
+      pending.socket.end(JSON.stringify(response));
       return true;
     } catch (err) {
       console.error('Failed to send interaction response:', err);
