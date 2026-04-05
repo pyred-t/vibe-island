@@ -324,7 +324,7 @@ function renderMachineCard(machine) {
     : `<span class="remote-status-dot ${statusCls}"></span><span class="remote-status-label ${statusCls}">${statusLabel}</span>`;
 
   const pathsHtml = machine.claudePaths.map(p => {
-    const hookBadge = isLocal ? getMachinePathHookBadge(machine.id, p) : '';
+    const hookBadge = isLocal ? getMachinePathHookBadge(machine.id, p) : '<span class="hook-badge installed" title="Hooks are automatically synced to this remote path on connect">Auto Synced ✓</span>';
     const encodedP = encodeURIComponent(p);
     return `<div class="machine-path-row">
       <span class="machine-path-text" title="${escapeHtml(p)}">${shortenPath(p)}</span>

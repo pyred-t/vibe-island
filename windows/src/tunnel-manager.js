@@ -263,7 +263,7 @@ class TunnelManager extends EventEmitter {
 
     const args = [
       '-N', '-v',
-      '-R', `${port}:localhost:${port}`,
+      '-R', `${port}:127.0.0.1:${port}`,
       '-o', 'BatchMode=yes',
       '-o', 'StrictHostKeyChecking=accept-new',
       '-o', 'ServerAliveInterval=30',
