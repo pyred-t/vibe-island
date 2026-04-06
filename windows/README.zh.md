@@ -2,16 +2,18 @@
 
 一个 Windows 系统托盘应用，实时监控 **Claude Code CLI** 会话状态——在任务栏通知区直接查看会话状态、工具调用、权限审批，无需切换终端。
 
-灵感来自 macOS 版 [Vibe Island](https://github.com/anthropics/vibe-island) 灵动岛体验。
+灵感来自 macOS 版 [Vibe Island](https://github.com/aczeccssa/vibe-island) 灵动岛体验。
 
 ## 功能特性
 
 - 🖥️ **系统托盘** — 像素风幽灵图标，实时状态颜色（灰色 / 靛蓝 / 琥珀）
-- 📋 **弹出面板** — 点击托盘图标开关面板；需要关注时自动弹出
+- 📋 **弹出面板** — 点击托盘图标开关面板；需要关注时自动弹出；点击外部自动收起
 - 🎨 **像素风图标** — Canvas 绘制的状态图标（气泡 / 手掌 / 沙漏 / 横线），带动画效果
 - 🦀 **Claude 螃蟹** — 头部像素风螃蟹吉祥物，颜色随会话状态变化
 - 🔐 **权限审批** — 允许 / 始终允许 / 拒绝工具调用，带结构化代码预览
-- 🔔 **应用内通知** — 浮动通知卡片 + 合成音效，不再被系统 Toast 打扰
+- 💬 **AskUserQuestion** — 只读展示 Claude 的问题和选项（不阻塞，在终端中回答）
+- 📝 **Markdown 渲染** — 轻量渲染器，支持代码块、粗体、链接、列表
+- 🔔 **应用内通知** — 浮动通知卡片 + 合成音效（可选）
 - 🌐 **远程 SSH 支持** — 通过安全反向 SSH 隧道监控远端 Linux 服务器上的 Claude Code
 - 🏷️ **正确的远端标签** — 远端会话显示 SSH 别名，而非机器的原始 hostname
 - 🐧 **WSL 支持** — 支持运行在 WSL 内的 Claude Code（WSL2 localhost 转发）
@@ -133,6 +135,7 @@ windows/
 │   ├── pixel-icons.js       # Canvas 像素风状态图标 + 螃蟹吉祥物
 │   ├── notifications.js     # 应用内浮动通知卡片
 │   ├── code-preview.js      # 结构化权限预览（Bash/Edit/Read/Web）
+│   ├── markdown-lite.js     # 轻量 Markdown 渲染器（无依赖）
 │   └── app.js               # 主渲染逻辑
 ├── hooks/
 │   └── claude-island-state.py  # Python hook 桥接（支持 --machine 参数）

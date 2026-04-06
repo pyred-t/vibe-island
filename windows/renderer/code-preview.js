@@ -11,7 +11,12 @@ const CodePreview = (() => {
    * @returns {HTMLElement}
    */
   function buildPermissionPreview(permission) {
-    const { toolName, toolInput } = permission;
+    const { toolName } = permission;
+    let { toolInput } = permission;
+    // tool_input may arrive as a JSON string — parse it
+    if (typeof toolInput === 'string') {
+      try { toolInput = JSON.parse(toolInput); } catch (e) { toolInput = {}; }
+    }
     const wrapper = document.createElement('div');
     wrapper.className = 'perm-preview';
 
@@ -58,7 +63,7 @@ const CodePreview = (() => {
     if (desc) {
       const descEl = document.createElement('div');
       descEl.className = 'perm-description';
-      descEl.textContent = desc;
+      descEl.innerHTML = typeof MarkdownLite !== 'undefined' ? MarkdownLite.render(desc) : _esc(desc);
       el.appendChild(descEl);
     }
 

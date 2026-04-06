@@ -270,14 +270,20 @@ function updateCrabStatus() {
 }
 
 // ─── Notification diffing ────────────────────────────────────────
+// Window already auto-shows when attention is needed, so in-app
+// notifications are only sent when the window is NOT visible.
+// Since we can't query visibility from renderer, we skip auto-notifications
+// by default. The InAppNotifications module is still available for manual use.
 
 function _checkNotifications(prev, next) {
+  // No-op: window auto-pops on phase change, no need for redundant banners.
+  // To re-enable, uncomment the body below.
+  /*
   for (const session of next) {
     const old = prev.find(s => s.sessionId === session.sessionId);
     const prevPhase = old?.phase;
     const newPhase = session.phase;
     if (prevPhase === newPhase) continue;
-
     if (newPhase === 'waiting_for_approval') {
       InAppNotifications.permissionRequired(
         session.activePermission?.toolName || 'Tool',
@@ -290,6 +296,7 @@ function _checkNotifications(prev, next) {
       InAppNotifications.compacting(session.cwd);
     }
   }
+  */
 }
 
 // ─── View ────────────────────────────────────────────────────────
@@ -418,19 +425,47 @@ function createSessionCard(session) {
     card.appendChild(permSection);
   }
 
-  // Interaction section
+  // Interaction section (read-only display of AskUserQuestion)
   if (session.phase === 'waiting_for_input' && session.activeInteraction) {
-    const q = session.activeInteraction.toolInput?.question || 'Input required';
+    let toolInput = session.activeInteraction.toolInput || {};
+    // tool_input may arrive as a JSON string — parse it
+    if (typeof toolInput === 'string') {
+      try { toolInput = JSON.parse(toolInput); } catch (e) { toolInput = {}; }
+    }
     const interactionSection = document.createElement('div');
     interactionSection.className = 'interaction-section';
-    interactionSection.innerHTML = `
-      <div class="interaction-question">${escapeHtml(q)}</div>
-      <div class="interaction-input-row">
-        <input type="text" class="interaction-input" id="interaction-${session.sessionId}"
-          placeholder="${t('inputPlaceholder')}"
-          onkeydown="if(event.key==='Enter')handleInteraction('${session.sessionId}','${session.activeInteraction.toolUseId}')">
-        <button class="btn btn-primary btn-sm" onclick="handleInteraction('${session.sessionId}','${session.activeInteraction.toolUseId}')">${t('send')}</button>
-      </div>`;
+
+    const questions = toolInput.questions;
+    if (questions && Array.isArray(questions) && questions.length > 0) {
+      let html = '';
+      for (const q of questions) {
+        const header = q.header ? `<div class="interaction-header">${escapeHtml(q.header)}</div>` : '';
+        const questionText = q.question || '';
+        let optionsHtml = '';
+        if (q.options && q.options.length > 0) {
+          optionsHtml = '<div class="interaction-options">' +
+            q.options.map(opt => {
+              const desc = opt.description ? `<span class="interaction-opt-desc">${escapeHtml(opt.description)}</span>` : '';
+              return `<div class="interaction-opt-chip">${escapeHtml(opt.label)}${desc}</div>`;
+            }).join('') + '</div>';
+        }
+        html += `${header}
+          <div class="interaction-question">${typeof MarkdownLite !== 'undefined' ? MarkdownLite.render(questionText) : escapeHtml(questionText)}</div>
+          ${optionsHtml}`;
+      }
+      interactionSection.innerHTML = html;
+    } else {
+      // Simple text question or raw tool_input — render as readable content
+      const q = toolInput.question || '';
+      if (q) {
+        interactionSection.innerHTML = `<div class="interaction-question">${typeof MarkdownLite !== 'undefined' ? MarkdownLite.render(q) : escapeHtml(q)}</div>`;
+      } else {
+        // Fallback: render tool_input as formatted JSON
+        const json = JSON.stringify(toolInput, null, 2);
+        interactionSection.innerHTML = `<pre class="perm-code">${escapeHtml(json)}</pre>`;
+      }
+    }
+
     card.appendChild(interactionSection);
   }
 
@@ -447,12 +482,6 @@ async function handleAlwaysAllow(sessionId, toolUseId) {
 }
 async function handleDeny(sessionId, toolUseId) {
   await window.claudeIsland.denyPermission(sessionId, toolUseId, 'Denied by user');
-}
-async function handleInteraction(sessionId, toolUseId) {
-  const input = document.getElementById(`interaction-${sessionId}`);
-  if (!input || !input.value.trim()) return;
-  await window.claudeIsland.submitInteraction(sessionId, toolUseId, { question: input.value.trim() });
-  input.value = '';
 }
 async function handleArchive(sessionId) {
   await window.claudeIsland.archiveSession(sessionId);

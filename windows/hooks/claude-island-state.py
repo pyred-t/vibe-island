@@ -106,11 +106,12 @@ def _is_wsl():
         return False
 
 
-def send_event(state, host, port):
+def send_event(state, host, port, timeout=None):
     """Send event to app via TCP, return response if any"""
+    effective_timeout = timeout if timeout is not None else TIMEOUT_SECONDS
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(TIMEOUT_SECONDS)
+        sock.settimeout(effective_timeout)
         sock.connect((host, port))
         sock.sendall(json.dumps(state).encode())
 
@@ -209,21 +210,9 @@ def main():
             state["tool_use_id"] = tool_use_id_from_event
 
         if tool_name == "AskUserQuestion":
+            # Fire-and-forget: show in Claude Island UI, don't block Claude Code
             state["status"] = "waiting_for_input"
-            response = send_event(state, host, port)
-            if response and response.get("updatedInput") is not None:
-                print(
-                    json.dumps(
-                        {
-                            "hookSpecificOutput": {
-                                "hookEventName": "PreToolUse",
-                                "permissionDecision": "allow",
-                                "updatedInput": response.get("updatedInput"),
-                            }
-                        }
-                    )
-                )
-                sys.exit(0)
+            send_event(state, host, port)
             sys.exit(0)
 
         state["status"] = "running_tool"
@@ -237,8 +226,14 @@ def main():
             state["tool_use_id"] = tool_use_id_from_event
 
     elif event == "PermissionRequest":
+        tool_name = data.get("tool_name")
+
+        # AskUserQuestion: don't intercept, let Claude Code handle permission natively
+        if tool_name == "AskUserQuestion":
+            sys.exit(0)
+
         state["status"] = "waiting_for_approval"
-        state["tool"] = data.get("tool_name")
+        state["tool"] = tool_name
         state["tool_input"] = tool_input
         tool_use_id = data.get("tool_use_id")
         if tool_use_id:

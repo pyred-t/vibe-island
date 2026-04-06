@@ -168,6 +168,26 @@ html, body {
   padding: 0 12px 12px;
 }
 
+/* ─── Global Scrollbar ────────────────────────────────────────── */
+
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 .content::-webkit-scrollbar {
   width: 4px;
 }
@@ -1300,9 +1320,6 @@ html, body {
   max-height: 150px;
 }
 
-.perm-code::-webkit-scrollbar { width: 3px; }
-.perm-code::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
-
 .perm-expand-btn {
   background: transparent;
   border: none;
@@ -1349,4 +1366,139 @@ html, body {
 
 .perm-json-rest {
   margin-top: 2px;
+}
+
+/* ─── Interaction Options (AskUserQuestion) ──────────────── */
+
+.interaction-header {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+
+.interaction-question-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.interaction-progress {
+  font-size: 10px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  padding-top: 2px;
+}
+
+.interaction-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.interaction-opt-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  transition: all var(--transition-fast);
+}
+
+.interaction-opt-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: var(--border);
+}
+
+.interaction-opt-btn.selected {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.4);
+  color: var(--warning);
+}
+
+.interaction-opt-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.interaction-opt-desc {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text-muted);
+  line-height: 1.3;
+}
+
+.interaction-hint {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 6px;
+  font-style: italic;
+}
+
+/* ─── Markdown Lite ──────────────────────────────────────── */
+
+.md-code-block {
+  margin: 4px 0;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-size: 10px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-x: auto;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.md-inline-code {
+  padding: 1px 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 0.9em;
+  color: var(--text-primary);
+}
+
+.md-h1 { font-size: 14px; font-weight: 700; margin: 6px 0 4px; color: var(--text-primary); }
+.md-h2 { font-size: 13px; font-weight: 600; margin: 5px 0 3px; color: var(--text-primary); }
+.md-h3 { font-size: 12px; font-weight: 600; margin: 4px 0 2px; color: var(--text-secondary); }
+
+.md-li, .md-li-ordered {
+  padding-left: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.md-link {
+  color: var(--info);
+  text-decoration: underline;
+  text-decoration-color: rgba(56, 189, 248, 0.3);
+}
+
+.md-link:hover {
+  text-decoration-color: var(--info);
 }

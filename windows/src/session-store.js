@@ -72,6 +72,9 @@ class SessionStore extends EventEmitter {
         toolInput: event.tool_input || {},
         receivedAt: new Date(),
       };
+    } else if (session.activeInteraction && event.event !== 'PreToolUse') {
+      // Clear interaction when any non-PreToolUse event arrives (PostToolUse, new phase, etc.)
+      session.activeInteraction = null;
     }
 
     // Handle tool info

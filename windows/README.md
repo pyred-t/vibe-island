@@ -2,16 +2,18 @@
 
 A Windows system tray application that monitors **Claude Code CLI** sessions in real time — showing session status, tool activity, and permission approval dialogs right from your taskbar notification area.
 
-Inspired by the macOS [Vibe Island](https://github.com/anthropics/vibe-island) Dynamic Island experience.
+Inspired by the macOS [Vibe Island](https://github.com/aczeccssa/vibe-island) Dynamic Island experience.
 
 ## Features
 
 - 🖥️ **System Tray** — Pixel-art ghost icon with live status color (slate / indigo / amber)
-- 📋 **Popup Panel** — Click tray icon to open/close the session panel; auto-shows when attention is needed
+- 📋 **Popup Panel** — Click tray icon to open/close; auto-shows when attention is needed; click outside to dismiss
 - 🎨 **Pixel-Art Icons** — Canvas-drawn status icons (speech bubble / hand / hourglass / dash) with animations
 - 🦀 **Claude Crab** — Animated pixel-art crab mascot in the header, color-coded by session state
 - 🔐 **Permission Approvals** — Allow / Always Allow / Deny tool calls with structured code preview
-- 🔔 **In-App Notifications** — Floating notification cards with synthesized sound effects (no system toast spam)
+- 💬 **AskUserQuestion** — Read-only display of Claude's questions and options (non-blocking, answer in terminal)
+- 📝 **Markdown Rendering** — Lightweight renderer for questions and descriptions (code blocks, bold, links, lists)
+- 🔔 **In-App Notifications** — Floating notification cards with synthesized sound effects (optional)
 - 🌐 **Remote SSH Support** — Monitor Claude Code on remote Linux servers via secure reverse SSH tunnels
 - 🏷️ **Correct Remote Labels** — Remote sessions show the SSH alias name, not the machine's raw hostname
 - 🐧 **WSL Support** — Works with Claude Code running inside WSL (WSL2 localhost forwarding)
@@ -133,6 +135,7 @@ windows/
 │   ├── pixel-icons.js       # Canvas pixel-art status icons + crab mascot
 │   ├── notifications.js     # In-app floating notification cards
 │   ├── code-preview.js      # Structured permission preview (Bash/Edit/Read/Web)
+│   ├── markdown-lite.js     # Lightweight Markdown renderer (no dependencies)
 │   └── app.js               # Main renderer logic
 ├── hooks/
 │   └── claude-island-state.py  # Python hook bridge (supports --machine flag)

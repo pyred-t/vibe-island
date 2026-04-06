@@ -124,6 +124,7 @@ const i18n = (() => {
 
       // In-app notification
       clickToView: 'Click to view',
+      interactionHint: 'Click option to copy, then paste in terminal',
     },
 
     zh: {
@@ -245,6 +246,7 @@ const i18n = (() => {
 
       // In-app notification
       clickToView: '点击查看',
+      interactionHint: '点击选项复制，然后在终端中粘贴',
     },
   };
 

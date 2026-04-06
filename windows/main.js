@@ -62,6 +62,9 @@ function createWindow() {
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 
+  // Use 'pop-up-menu' level so blur fires reliably when clicking outside
+  mainWindow.setAlwaysOnTop(true, 'pop-up-menu');
+
   mainWindow.on('blur', () => {
     if (!isQuitting && mainWindow && mainWindow.isVisible()) {
       // Small delay so clicking tray icon doesn't instantly hide
@@ -88,7 +91,11 @@ function showWindow() {
   mainWindow.setPosition(screenWidth - winWidth - 12, screenHeight - winHeight - 12);
 
   mainWindow.show();
+  // On Windows, force focus so blur event fires when clicking outside
+  mainWindow.setAlwaysOnTop(true, 'pop-up-menu');
+  mainWindow.moveTop();
   mainWindow.focus();
+  mainWindow.setAlwaysOnTop(true, 'pop-up-menu');
 }
 
 function toggleWindow() {
@@ -125,6 +132,12 @@ function setupIPC() {
 
   ipcMain.handle('submit-interaction', (_event, sessionId, toolUseId, input) => {
     const success = hookServer.respondToInteraction(toolUseId, input);
+    if (success) SessionStore.interactionSubmitted(sessionId, toolUseId);
+    return success;
+  });
+
+  ipcMain.handle('deny-interaction', (_event, sessionId, toolUseId, reason) => {
+    const success = hookServer.denyInteraction(toolUseId, reason || 'Dismissed by user');
     if (success) SessionStore.interactionSubmitted(sessionId, toolUseId);
     return success;
   });

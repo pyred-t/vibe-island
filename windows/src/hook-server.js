@@ -74,9 +74,9 @@ class HookServer extends EventEmitter {
 
     socket.on('data', (chunk) => {
       data = Buffer.concat([data, chunk]);
-      // Reset the idle timer each time data arrives
+      // Short idle timer as fallback — normally 'end' fires first
       if (processTimer) clearTimeout(processTimer);
-      processTimer = setTimeout(tryProcess, 80);
+      processTimer = setTimeout(tryProcess, 5);
     });
 
     // Process when client closes write side (most common for fire-and-forget)
@@ -172,7 +172,6 @@ class HookServer extends EventEmitter {
    */
   _eventExpectsResponse(event) {
     if (event.event === 'PermissionRequest') return true;
-    if (event.agent_id === 'claude' && event.event === 'PreToolUse' && event.tool === 'AskUserQuestion') return true;
     if (event.status === 'waiting_for_approval') return true;
     return false;
   }
@@ -183,7 +182,8 @@ class HookServer extends EventEmitter {
   _getResponseKind(event) {
     if (event.event === 'PermissionRequest') return 'permission';
     if (event.status === 'waiting_for_approval') return 'permission';
-    if (event.event === 'PreToolUse' && event.tool === 'AskUserQuestion') return 'interaction';
+    // AskUserQuestion is fire-and-forget from hook side, but we still
+    // emit it as an event so session-store can set activeInteraction for UI display
     return 'none';
   }
 
@@ -230,6 +230,30 @@ class HookServer extends EventEmitter {
       return true;
     } catch (err) {
       console.error('Failed to send interaction response:', err);
+      try { pending.socket.destroy(); } catch (e) {}
+      return false;
+    }
+  }
+
+  /**
+   * Deny/dismiss a pending interaction (close socket without updatedInput)
+   */
+  denyInteraction(toolUseId, reason = null) {
+    const pending = this._pendingInteractions.get(toolUseId);
+    if (!pending) {
+      console.warn(`No pending interaction for toolUseId: ${toolUseId}`);
+      return false;
+    }
+
+    this._pendingInteractions.delete(toolUseId);
+
+    const response = { decision: 'deny', reason: reason || 'Dismissed by user' };
+
+    try {
+      pending.socket.end(JSON.stringify(response));
+      return true;
+    } catch (err) {
+      console.error('Failed to send interaction deny:', err);
       try { pending.socket.destroy(); } catch (e) {}
       return false;
     }
