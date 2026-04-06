@@ -82,63 +82,66 @@ class TrayManager {
   }
 
   /**
-   * Create a programmatic tray icon with status indicator
+   * Create a pixel-art style tray icon with a crab silhouette
+   * @param {'idle'|'active'|'waiting'} status
    */
   _createDefaultIcon(status) {
-    // Create a 32x32 icon with a colored circle
-    const size = 32;
-    const canvas = Buffer.alloc(size * size * 4, 0);
+    const size = 128;
+    const buf = Buffer.alloc(size * size * 4, 0);
 
     let r, g, b;
     switch (status) {
-      case 'active':
-        r = 99; g = 102; b = 241; // Indigo
-        break;
-      case 'waiting':
-        r = 245; g = 158; b = 11; // Amber
-        break;
-      default:
-        r = 148; g = 163; b = 184; // Gray
+      case 'active':  r = 99;  g = 102; b = 241; break; // Indigo
+      case 'waiting': r = 245; g = 158; b = 11;  break; // Amber
+      default:        r = 100; g = 116; b = 139; break; // Slate
     }
 
-    // Draw a filled circle
-    const cx = size / 2, cy = size / 2, radius = size / 2 - 2;
-    for (let y = 0; y < size; y++) {
-      for (let x = 0; x < size; x++) {
-        const dx = x - cx, dy = y - cy;
-        const dist = Math.sqrt(dx * dx + dy * dy);
+    const setpx = (x, y, pr, pg, pb, pa) => {
+      if (x < 0 || x >= size || y < 0 || y >= size) return;
+      const i = (y * size + x) * 4;
+      buf[i] = pr; buf[i+1] = pg; buf[i+2] = pb; buf[i+3] = pa;
+    };
 
-        if (dist <= radius) {
-          const idx = (y * size + x) * 4;
-          // Anti-aliasing at edges
-          const alpha = dist > radius - 1 ? Math.max(0, (radius - dist)) * 255 : 255;
-          canvas[idx] = r;       // R
-          canvas[idx + 1] = g;   // G
-          canvas[idx + 2] = b;   // B
-          canvas[idx + 3] = Math.round(alpha); // A
-        }
+    // Rounded-rect background
+    const pad = 6, cr = 22;
+    for (let y = pad; y < size - pad; y++) {
+      for (let x = pad; x < size - pad; x++) {
+        const dx = Math.max(0, Math.max(pad + cr - x, x - (size - pad - cr - 1)));
+        const dy = Math.max(0, Math.max(pad + cr - y, y - (size - pad - cr - 1)));
+        if (Math.hypot(dx, dy) <= cr) setpx(x, y, r, g, b, 255);
       }
     }
 
-    // Add a subtle inner highlight for depth
-    for (let y = 0; y < size; y++) {
-      for (let x = 0; x < size; x++) {
-        const dx = x - cx + 3, dy = y - cy + 3;
-        const dist = Math.sqrt(dx * dx + dy * dy);
+    // Pixel ghost — simple silhouette, very readable at 16x16
+    // 16x16 logical grid, each cell = 8x8 actual pixels
+    const cell = size / 16;
+    const block = (gx, gy, pr, pg, pb, pa) => {
+      const ox = Math.round(gx * cell);
+      const oy = Math.round(gy * cell);
+      const cs = Math.round(cell) - 1;
+      for (let dy = 0; dy < cs; dy++)
+        for (let dx = 0; dx < cs; dx++)
+          setpx(ox + dx, oy + dy, pr, pg, pb, pa);
+    };
 
-        if (dist <= radius * 0.5) {
-          const idx = (y * size + x) * 4;
-          if (canvas[idx + 3] > 0) {
-            const blend = 0.15 * (1 - dist / (radius * 0.5));
-            canvas[idx] = Math.min(255, canvas[idx] + 255 * blend);
-            canvas[idx + 1] = Math.min(255, canvas[idx + 1] + 255 * blend);
-            canvas[idx + 2] = Math.min(255, canvas[idx + 2] + 255 * blend);
-          }
-        }
-      }
-    }
+    const W = [255, 255, 255, 240];
+    const E = [r, g, b, 255]; // eye = bg color (cutout)
 
-    return nativeImage.createFromBuffer(canvas, { width: size, height: size });
+    // Top dome
+    block(5,2,...W); block(6,2,...W); block(7,2,...W); block(8,2,...W); block(9,2,...W); block(10,2,...W);
+    block(4,3,...W); block(5,3,...W); block(6,3,...W); block(7,3,...W); block(8,3,...W); block(9,3,...W); block(10,3,...W); block(11,3,...W);
+    // Body rows 4–9
+    for (let row = 4; row <= 9; row++)
+      for (let col = 4; col <= 11; col++) block(col, row, ...W);
+    // Wavy skirt
+    block(4,10,...W); block(5,10,...W);
+    block(7,10,...W); block(8,10,...W);
+    block(10,10,...W); block(11,10,...W);
+    // Eyes (2x2 cutout each)
+    block(6,5,...E); block(7,5,...E); block(6,6,...E); block(7,6,...E);
+    block(9,5,...E); block(10,5,...E); block(9,6,...E); block(10,6,...E);
+
+    return nativeImage.createFromBuffer(buf, { width: size, height: size, scaleFactor: 4.0 });
   }
 
   _updateContextMenu() {

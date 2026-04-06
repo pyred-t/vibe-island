@@ -8,54 +8,65 @@
 let currentView = 'sessions';
 let sessions = [];
 let config = {};
-let machines = [];       // configStore.machines
-let sshHosts = [];       // parsed SSH config hosts (for import dialog)
-let remoteStatuses = {}; // { sshAlias: status }
+let machines = [];
+let sshHosts = [];
+let remoteStatuses = {};
 let authPendingId = null;
+let _prevSessions = []; // for notification diffing
 
 // ─── Constants ──────────────────────────────────────────────────
 
-const PHASE_LABELS = {
-  idle: 'Idle',
-  processing: 'Processing',
-  waiting_for_input: 'Ready',
-  waiting_for_approval: 'Needs Approval',
-  compacting: 'Compacting',
-  ended: 'Ended',
-};
-
-const AGENT_NAMES = {
-  claude: 'Claude Code',
-  codex: 'Codex',
-  gemini: 'Gemini CLI',
-};
-
-const STATUS_LABELS = {
-  idle:             { label: 'Idle',          cls: 'status-idle' },
-  connecting:       { label: 'Connecting…',   cls: 'status-connecting' },
-  installing_hooks: { label: 'Installing…',   cls: 'status-connecting' },
-  connected:        { label: 'Connected',     cls: 'status-connected' },
-  auth_required:    { label: 'Auth Required', cls: 'status-error' },
-  port_conflict:    { label: 'Port Conflict', cls: 'status-error' },
-  error:            { label: 'Error',         cls: 'status-error' },
-  disconnecting:    { label: 'Disconnecting', cls: 'status-idle' },
+const STATUS_LABELS_MAP = {
+  idle:             { cls: 'status-idle' },
+  connecting:       { cls: 'status-connecting' },
+  installing_hooks: { cls: 'status-connecting' },
+  connected:        { cls: 'status-connected' },
+  auth_required:    { cls: 'status-error' },
+  port_conflict:    { cls: 'status-error' },
+  error:            { cls: 'status-error' },
+  disconnecting:    { cls: 'status-idle' },
 };
 
 // ─── Init ───────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', async () => {
+  // Apply saved language
+  const savedLang = localStorage.getItem('ci_lang') || 'zh';
+  i18n.setLang(savedLang);
+
+  // Init notification module
+  InAppNotifications.init();
+
+  // Load config & data
   sessions = await window.claudeIsland.getSessions();
   config = await window.claudeIsland.getConfig();
   machines = await window.claudeIsland.getMachines();
   sshHosts = await window.claudeIsland.getSshHosts();
   remoteStatuses = await window.claudeIsland.getRemoteStatuses();
 
+  // Apply notification settings from config
+  const notifMode = config.notifMode || 'inapp';
+  const notifSound = config.notifSound || 'pop';
+  InAppNotifications.setMode(notifMode);
+  InAppNotifications.setSound(notifSound);
+
+  // Init crab icon in header
+  _initCrabIcon();
+
+  // Render
+  applyI18n();
   renderSessions();
-  updateStatusDot();
+  updateCrabStatus();
   renderSettings();
 
   // Live updates
-  window.claudeIsland.onSessionsChanged(s => { sessions = s; renderSessions(); updateStatusDot(); });
+  window.claudeIsland.onSessionsChanged(s => {
+    _prevSessions = sessions;
+    sessions = s;
+    renderSessions();
+    updateCrabStatus();
+    _checkNotifications(_prevSessions, sessions);
+  });
   window.claudeIsland.onMachinesChanged(m => { machines = m; renderMachines(); });
   window.claudeIsland.onRemoteStatusChanged(({ alias, status }) => {
     remoteStatuses[alias] = status;
@@ -99,7 +110,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('importDialog').classList.remove('hidden');
   });
   document.getElementById('addCustomHostBtn')?.addEventListener('click', async () => {
-    const alias = prompt('Enter SSH host alias (e.g. user@hostname or an alias from SSH config):');
+    const alias = prompt(i18n.t('addCustomHost') + ':');
     if (alias && alias.trim()) {
       await window.claudeIsland.addSSHMachine(alias.trim(), { claudePaths: ['~/.claude'], port: 51515, autoConnect: false });
       machines = await window.claudeIsland.getMachines();
@@ -118,12 +129,47 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (port >= 1024 && port <= 65535) window.claudeIsland.setConfig('port', port);
   });
 
-  // Notification toggle
-  const notifToggle = document.getElementById('notifToggle');
-  notifToggle.checked = config.enableNotifications !== false;
-  notifToggle.addEventListener('change', () => {
-    window.claudeIsland.setConfig('enableNotifications', notifToggle.checked);
-  });
+  // Notification mode select
+  const notifModeSelect = document.getElementById('notifModeSelect');
+  if (notifModeSelect) {
+    notifModeSelect.value = notifMode;
+    notifModeSelect.addEventListener('change', () => {
+      const val = notifModeSelect.value;
+      InAppNotifications.setMode(val);
+      window.claudeIsland.setConfig('notifMode', val);
+      // Disable main-process system notifications unless mode is 'system'
+      window.claudeIsland.setConfig('enableNotifications', val === 'system');
+    });
+  }
+
+  // Sync on startup: disable system notifications if mode is inapp/off
+  if (notifMode !== 'system') {
+    window.claudeIsland.setConfig('enableNotifications', false);
+  }
+
+  // Notification sound select
+  const notifSoundSelect = document.getElementById('notifSoundSelect');
+  if (notifSoundSelect) {
+    notifSoundSelect.value = notifSound;
+    notifSoundSelect.addEventListener('change', () => {
+      const val = notifSoundSelect.value;
+      InAppNotifications.setSound(val);
+      window.claudeIsland.setConfig('notifSound', val);
+      InAppNotifications.playSound(val); // preview
+    });
+  }
+
+  // Language select
+  const langSelect = document.getElementById('langSelect');
+  if (langSelect) {
+    langSelect.value = savedLang;
+    langSelect.addEventListener('change', () => {
+      i18n.setLang(langSelect.value);
+      applyI18n();
+      renderSessions();
+      renderSettings();
+    });
+  }
 
   // Auth dialog buttons
   document.getElementById('authDialogCopyBtn')?.addEventListener('click', () => {
@@ -136,6 +182,115 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   document.getElementById('authDialogDismissBtn')?.addEventListener('click', hideAuthDialog);
 });
+
+// ─── i18n ────────────────────────────────────────────────────────
+
+function applyI18n() {
+  const { t } = i18n;
+
+  // Header
+  const headerTitle = document.getElementById('headerTitle');
+  if (headerTitle) headerTitle.textContent = t('appTitle');
+
+  // Empty state
+  const emptyTitle = document.getElementById('emptyTitle');
+  if (emptyTitle) emptyTitle.textContent = t('noActiveSessions');
+  const emptySubtitle = document.getElementById('emptySubtitle');
+  if (emptySubtitle) emptySubtitle.textContent = t('noActiveSessionsHint');
+
+  // Settings section labels
+  const sLabels = {
+    sLabel_sshConfig: 'sshConfig',
+    sLabel_machines: 'machines',
+    sLabel_server: 'server',
+    sLabel_notifications: 'notifications',
+    sLabel_appearance: 'appearance',
+    sLabel_tcpPort: 'tcpPort',
+    sLabel_notificationMode: 'notificationMode',
+    sLabel_notificationSound: 'notificationSound',
+    sLabel_language: 'language',
+    sLabel_importFromSshConfig: 'importFromSshConfig',
+    sLabel_addCustomHost: 'addCustomHost',
+    // Dialogs
+    importDialogTitle: 'importSshHost',
+    importDialogBody: 'importSshHostBody',
+    importDialogCancelBtn: 'cancel',
+    authDialogBody: 'authBody',
+    authDialogCopyBtn: 'copy',
+    authDialogRetryBtn: 'retryBtn',
+    authDialogDismissBtn: 'dismiss',
+  };
+  for (const [id, key] of Object.entries(sLabels)) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = t(key);
+  }
+
+  // Notification mode options
+  const notifModeSelect = document.getElementById('notifModeSelect');
+  if (notifModeSelect) {
+    notifModeSelect.options[0].text = t('notifModeInApp');
+    notifModeSelect.options[1].text = t('notifModeSystem');
+    notifModeSelect.options[2].text = t('notifModeOff');
+  }
+
+  // Notification sound options
+  const notifSoundSelect = document.getElementById('notifSoundSelect');
+  if (notifSoundSelect) {
+    const soundKeys = ['soundNone', 'soundPop', 'soundPing', 'soundBell', 'soundChime'];
+    for (let i = 0; i < notifSoundSelect.options.length; i++) {
+      if (soundKeys[i]) notifSoundSelect.options[i].text = t(soundKeys[i]);
+    }
+  }
+}
+
+// ─── Crab Icon ───────────────────────────────────────────────────
+
+function _initCrabIcon() {
+  const canvas = document.getElementById('crabIcon');
+  if (!canvas) return;
+  // drawCrab sets _crabSize, _crabColor etc. on the canvas — must call this first
+  PixelIcons.drawCrab(canvas, PixelIcons.COLORS.dim, 20, false);
+}
+
+function updateCrabStatus() {
+  const canvas = document.getElementById('crabIcon');
+  if (!canvas) return;
+
+  const active = sessions.filter(s => s.phase !== 'ended');
+  const hasApproval = active.some(s => s.phase === 'waiting_for_approval');
+  const hasActive = active.some(s => ['processing', 'compacting'].includes(s.phase));
+
+  let status = 'idle';
+  if (hasApproval) status = 'waiting';
+  else if (hasActive) status = 'active';
+
+  const color = PixelIcons.crabColorForStatus(status);
+  const animateLegs = status === 'active';
+  PixelIcons.updateCrabIcon(canvas, color, animateLegs);
+}
+
+// ─── Notification diffing ────────────────────────────────────────
+
+function _checkNotifications(prev, next) {
+  for (const session of next) {
+    const old = prev.find(s => s.sessionId === session.sessionId);
+    const prevPhase = old?.phase;
+    const newPhase = session.phase;
+    if (prevPhase === newPhase) continue;
+
+    if (newPhase === 'waiting_for_approval') {
+      InAppNotifications.permissionRequired(
+        session.activePermission?.toolName || 'Tool',
+        session.cwd,
+        session.sessionId
+      );
+    } else if (newPhase === 'waiting_for_input' && prevPhase === 'processing') {
+      InAppNotifications.claudeReady(session.cwd, session.sessionId);
+    } else if (newPhase === 'compacting') {
+      InAppNotifications.compacting(session.cwd);
+    }
+  }
+}
 
 // ─── View ────────────────────────────────────────────────────────
 
@@ -189,24 +344,16 @@ function renderSessions() {
   });
 }
 
-function updateStatusDot() {
-  const dot = document.getElementById('statusDot');
-  const active = sessions.filter(s => s.phase !== 'ended');
-  const hasApproval = active.some(s => s.phase === 'waiting_for_approval');
-  const hasActive = active.some(s => ['processing', 'compacting'].includes(s.phase));
-  dot.className = 'logo-dot';
-  if (hasApproval) dot.classList.add('waiting');
-  else if (hasActive) dot.classList.add('active');
-  else if (active.length > 0) dot.classList.add('idle-sessions');
-}
-
 function createSessionCard(session) {
+  const { t } = i18n;
   const card = document.createElement('div');
   card.className = `session-card ${session.phase}`;
   card.dataset.sessionId = session.sessionId;
 
-  const agentName = AGENT_NAMES[session.agentId] || session.agentId;
-  const phaseLabel = PHASE_LABELS[session.phase] || session.phase;
+  const agentKey = `agent_${session.agentId}`;
+  const agentName = t(agentKey) !== agentKey ? t(agentKey) : (session.agentId || 'Claude');
+  const phaseKey = `phase_${session.phase}`;
+  const phaseLabel = t(phaseKey) !== phaseKey ? t(phaseKey) : session.phase;
   const cwd = shortenPath(session.cwd);
   const timeAgo = formatTimeAgo(session.lastEventAt);
 
@@ -222,53 +369,70 @@ function createSessionCard(session) {
     </div>`;
   }
 
-  let permissionSection = '';
-  if (session.phase === 'waiting_for_approval' && session.activePermission) {
-    const p = session.activePermission;
-    const preview = p.toolInput ? truncate(JSON.stringify(p.toolInput), 120) : '';
-    permissionSection = `
-      <div class="permission-tool-info">
-        <div>Allow <span class="permission-tool-name">${escapeHtml(p.toolName)}</span>?</div>
-        ${preview ? `<div class="permission-tool-input">${escapeHtml(preview)}</div>` : ''}
-      </div>
-      <div class="permission-actions">
-        <button class="btn btn-success btn-sm" onclick="handleApprove('${session.sessionId}','${p.toolUseId}')">Allow</button>
-        <button class="btn btn-warning btn-sm" onclick="handleAlwaysAllow('${session.sessionId}','${p.toolUseId}')">Always</button>
-        <button class="btn btn-danger btn-sm" onclick="handleDeny('${session.sessionId}','${p.toolUseId}')">Deny</button>
-      </div>`;
-  }
-
-  let interactionSection = '';
-  if (session.phase === 'waiting_for_input' && session.activeInteraction) {
-    const q = session.activeInteraction.toolInput?.question || 'Input required';
-    interactionSection = `
-      <div class="interaction-section">
-        <div class="interaction-question">${escapeHtml(q)}</div>
-        <div class="interaction-input-row">
-          <input type="text" class="interaction-input" id="interaction-${session.sessionId}"
-            onkeydown="if(event.key==='Enter')handleInteraction('${session.sessionId}','${session.activeInteraction.toolUseId}')">
-          <button class="btn btn-primary btn-sm" onclick="handleInteraction('${session.sessionId}','${session.activeInteraction.toolUseId}')">Send</button>
-        </div>
-      </div>`;
-  }
-
+  // Build card shell first
   const archiveBtn = session.phase === 'ended'
-    ? `<button class="btn btn-ghost session-archive-btn" onclick="handleArchive('${session.sessionId}')" title="Remove">✕</button>`
+    ? `<button class="btn btn-ghost session-archive-btn" onclick="handleArchive('${session.sessionId}')" title="${t('remove')}">✕</button>`
     : '';
+
+  // Status icon (pixel art canvas)
+  const iconWrapper = document.createElement('span');
+  iconWrapper.className = 'session-status-icon';
+  const iconCanvas = PixelIcons.createStatusIcon(session.phase, 14);
+  iconWrapper.appendChild(iconCanvas);
 
   card.innerHTML = `
     ${archiveBtn}
     <div class="session-header">
       <div class="session-agent">
-        <div class="session-agent-dot ${session.phase}"></div>
+        <span class="session-status-icon-slot"></span>
         <span class="session-agent-name">${escapeHtml(agentName)}</span>
       </div>
       <span class="session-phase-label ${session.phase}">${phaseLabel}</span>
     </div>
     ${hostBadge}
     <div class="session-cwd" title="${escapeHtml(session.cwd || '')}">${escapeHtml(cwd)}</div>
-    ${toolInfo}${permissionSection}${interactionSection}
+    ${toolInfo}
     <div class="session-time">${timeAgo}</div>`;
+
+  // Insert pixel icon into slot
+  const slot = card.querySelector('.session-status-icon-slot');
+  if (slot) slot.replaceWith(iconWrapper);
+
+  // Permission section — use CodePreview module
+  if (session.phase === 'waiting_for_approval' && session.activePermission) {
+    const p = session.activePermission;
+    const permSection = document.createElement('div');
+    permSection.className = 'permission-section';
+
+    const preview = CodePreview.buildPermissionPreview(p);
+    permSection.appendChild(preview);
+
+    const actions = document.createElement('div');
+    actions.className = 'permission-actions';
+    actions.innerHTML = `
+      <button class="btn btn-success btn-sm" onclick="handleApprove('${session.sessionId}','${p.toolUseId}')">${t('allow')}</button>
+      <button class="btn btn-warning btn-sm" onclick="handleAlwaysAllow('${session.sessionId}','${p.toolUseId}')">${t('alwaysAllow')}</button>
+      <button class="btn btn-danger btn-sm" onclick="handleDeny('${session.sessionId}','${p.toolUseId}')">${t('deny')}</button>`;
+    permSection.appendChild(actions);
+
+    card.appendChild(permSection);
+  }
+
+  // Interaction section
+  if (session.phase === 'waiting_for_input' && session.activeInteraction) {
+    const q = session.activeInteraction.toolInput?.question || 'Input required';
+    const interactionSection = document.createElement('div');
+    interactionSection.className = 'interaction-section';
+    interactionSection.innerHTML = `
+      <div class="interaction-question">${escapeHtml(q)}</div>
+      <div class="interaction-input-row">
+        <input type="text" class="interaction-input" id="interaction-${session.sessionId}"
+          placeholder="${t('inputPlaceholder')}"
+          onkeydown="if(event.key==='Enter')handleInteraction('${session.sessionId}','${session.activeInteraction.toolUseId}')">
+        <button class="btn btn-primary btn-sm" onclick="handleInteraction('${session.sessionId}','${session.activeInteraction.toolUseId}')">${t('send')}</button>
+      </div>`;
+    card.appendChild(interactionSection);
+  }
 
   return card;
 }
@@ -299,7 +463,20 @@ async function handleArchive(sessionId) {
 function renderSettings() {
   renderMachines();
   document.getElementById('portInput').value = config.port || 51515;
-  document.getElementById('notifToggle').checked = config.enableNotifications !== false;
+
+  // Read live values from localStorage/module state, not stale config snapshot
+  const notifModeSelect = document.getElementById('notifModeSelect');
+  if (notifModeSelect && !notifModeSelect._userChanged) {
+    notifModeSelect.value = config.notifMode || 'inapp';
+  }
+
+  const notifSoundSelect = document.getElementById('notifSoundSelect');
+  if (notifSoundSelect && !notifSoundSelect._userChanged) {
+    notifSoundSelect.value = config.notifSound || 'pop';
+  }
+
+  const langSelect = document.getElementById('langSelect');
+  if (langSelect) langSelect.value = i18n.getLang();
 }
 
 // ─── Machine Cards ───────────────────────────────────────────────
@@ -313,42 +490,45 @@ function renderMachines() {
 }
 
 function renderMachineCard(machine) {
+  const { t } = i18n;
   const isLocal = machine.type === 'local';
   const icon = isLocal ? '🖥' : '🌐';
   const status = isLocal ? null : (remoteStatuses[machine.sshAlias] || 'idle');
-  const { label: statusLabel, cls: statusCls } = STATUS_LABELS[status] || STATUS_LABELS.idle;
+  const statusKey = `status_${status}`;
+  const statusLabel = t(statusKey) !== statusKey ? t(statusKey) : (status || 'Idle');
+  const statusCls = (STATUS_LABELS_MAP[status] || STATUS_LABELS_MAP.idle).cls;
 
   const headerRight = isLocal
     ? '<span class="machine-tag">local</span>'
     : `<span class="remote-status-dot ${statusCls}"></span><span class="remote-status-label ${statusCls}">${statusLabel}</span>`;
 
   const pathsHtml = machine.claudePaths.map(p => {
-    const hookBadge = isLocal ? getMachinePathHookBadge(machine.id, p) : '<span class="hook-badge installed" title="Hooks are automatically synced to this remote path on connect">Auto Synced ✓</span>';
+    const hookBadge = isLocal ? getMachinePathHookBadge(machine.id, p) : `<span class="hook-badge installed" title="Hooks are automatically synced">${t('autoSynced')}</span>`;
     const encodedP = encodeURIComponent(p);
     return `<div class="machine-path-row">
       <span class="machine-path-text" title="${escapeHtml(p)}">${shortenPath(p)}</span>
       ${hookBadge}
-      <button class="btn btn-ghost btn-xs machine-path-remove" onclick="machineRemovePath('${machine.id}', '${encodedP}')" title="Remove">✕</button>
+      <button class="btn btn-ghost btn-xs machine-path-remove" onclick="machineRemovePath('${machine.id}', '${encodedP}')" title="${t('remove')}">✕</button>
     </div>`;
   }).join('');
 
   let actionsHtml = '';
   if (isLocal) {
     actionsHtml = `
-      <button class="btn btn-outline btn-sm" onclick="machineAddPath('${machine.id}')">+ Add Path</button>
-      <button class="btn btn-primary btn-sm" onclick="machineInstallHooks('${machine.id}')">Install Hooks</button>`;
+      <button class="btn btn-outline btn-sm" onclick="machineAddPath('${machine.id}')">+ ${t('addPath').replace('+ ','')}</button>
+      <button class="btn btn-primary btn-sm" onclick="machineInstallHooks('${machine.id}')">${t('installHooks')}</button>`;
   } else {
     const connected = status === 'connected';
     const errored = ['auth_required', 'error', 'port_conflict'].includes(status);
     const connectBtn = connected
-      ? `<button class="btn btn-ghost btn-sm" onclick="machineDisconnect('${machine.id}')">Disconnect</button>`
+      ? `<button class="btn btn-ghost btn-sm" onclick="machineDisconnect('${machine.id}')">${t('disconnect')}</button>`
       : errored
-        ? `<button class="btn btn-outline btn-sm" onclick="machineRetry('${machine.id}')">Retry</button>`
-        : `<button class="btn btn-primary btn-sm" onclick="machineConnect('${machine.id}')">Connect</button>`;
+        ? `<button class="btn btn-outline btn-sm" onclick="machineRetry('${machine.id}')">${t('retry')}</button>`
+        : `<button class="btn btn-primary btn-sm" onclick="machineConnect('${machine.id}')">${t('connect')}</button>`;
     actionsHtml = `${connectBtn}
-      <button class="btn btn-ghost btn-sm" onclick="machineInstallHooks('${machine.id}', this)" ${!connected ? 'disabled title="Connect first"' : ''}>Force Sync</button>
-      <button class="btn btn-ghost btn-sm" onclick="machineAddRemotePath('${machine.id}')">+ Path</button>
-      <button class="btn btn-ghost btn-sm machine-remove-btn" onclick="machineRemove('${machine.id}')">Remove</button>`;
+      <button class="btn btn-ghost btn-sm" onclick="machineInstallHooks('${machine.id}', this)" ${!connected ? 'disabled title="Connect first"' : ''}>${t('forceSync')}</button>
+      <button class="btn btn-ghost btn-sm" onclick="machineAddRemotePath('${machine.id}')">+ ${t('addRemotePath').replace('+ ','')}</button>
+      <button class="btn btn-ghost btn-sm machine-remove-btn" onclick="machineRemove('${machine.id}')">${t('remove')}</button>`;
   }
 
   return `<div class="machine-card" id="machine-${machine.id}">
@@ -356,12 +536,13 @@ function renderMachineCard(machine) {
       <div class="machine-title"><span class="machine-icon">${icon}</span><span class="machine-label">${escapeHtml(machine.label)}</span></div>
       <div class="machine-status">${headerRight}</div>
     </div>
-    <div class="machine-paths">${pathsHtml || '<span class="settings-hint" style="margin:0">No paths configured</span>'}</div>
+    <div class="machine-paths">${pathsHtml || `<span class="settings-hint" style="margin:0">${t('noPathsConfigured')}</span>`}</div>
     <div class="machine-actions">${actionsHtml}</div>
   </div>`;
 }
 
 function getMachinePathHookBadge(machineId, p) {
+  const { t } = i18n;
   const key = `${machineId}:${p}`;
   const s = _hookStatusCache[key];
   if (!s) {
@@ -371,9 +552,9 @@ function getMachinePathHookBadge(machineId, p) {
     }).catch(() => {});
     return '';
   }
-  if (!s.exists) return '<span class="hook-badge not-found">Not Found</span>';
-  if (s.installed) return '<span class="hook-badge installed">Hooks ✓</span>';
-  return '<span class="hook-badge not-installed">Hooks ✗</span>';
+  if (!s.exists) return `<span class="hook-badge not-found">${t('hooksNotFound')}</span>`;
+  if (s.installed) return `<span class="hook-badge installed">${t('hooksInstalled')}</span>`;
+  return `<span class="hook-badge not-installed">${t('hooksNotInstalled')}</span>`;
 }
 
 // ─── Machine Actions ─────────────────────────────────────────────
@@ -405,7 +586,7 @@ async function machineRemovePath(machineId, encodedPath) {
 
 async function machineInstallHooks(machineId, btnArg) {
   const btn = btnArg || event?.target;
-  const originalText = btn?.textContent || 'Install Hooks';
+  const originalText = btn?.textContent || i18n.t('installHooks');
   if (btn) { btn.textContent = 'Syncing…'; btn.disabled = true; }
   try {
     const res = await window.claudeIsland.installHooksForMachine(machineId);
@@ -448,12 +629,13 @@ async function machineRemove(machineId) {
 // ─── Import Dialog ───────────────────────────────────────────────
 
 function renderImportList() {
+  const { t } = i18n;
   const container = document.getElementById('importHostList');
   if (!container) return;
   const existing = new Set(machines.filter(m => m.type === 'ssh').map(m => m.sshAlias));
   const available = sshHosts.filter(h => !existing.has(h.alias));
   if (available.length === 0) {
-    container.innerHTML = '<p class="settings-hint">All SSH config hosts are already added.</p>';
+    container.innerHTML = `<p class="settings-hint">${t('allHostsAdded')}</p>`;
     return;
   }
   container.innerHTML = available.map(h => `
@@ -463,7 +645,7 @@ function renderImportList() {
         <span class="remote-host-alias">${escapeHtml(h.alias)}</span>
         <span class="settings-hint" style="margin:0">${escapeHtml(h.hostname)}</span>
       </div>
-      <button class="btn btn-primary btn-sm">Add</button>
+      <button class="btn btn-primary btn-sm">${t('add')}</button>
     </div>`).join('');
 }
 
@@ -479,7 +661,7 @@ async function importHost(alias) {
 function showAuthDialog(machineId) {
   authPendingId = machineId;
   const machine = machines.find(m => m.id === machineId);
-  document.getElementById('authDialogTitle').textContent = `${machine?.label || machineId} — Authentication Required`;
+  document.getElementById('authDialogTitle').textContent = `${machine?.label || machineId} — ${i18n.t('authRequired')}`;
   document.getElementById('authDialog').classList.remove('hidden');
 }
 
@@ -508,11 +690,12 @@ function truncate(str, maxLen) {
 }
 
 function formatTimeAgo(dateStr) {
+  const { t } = i18n;
   if (!dateStr) return '';
   const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
-  if (seconds < 5) return 'just now';
-  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 5) return t('justNow');
+  if (seconds < 60) return t('secondsAgo', seconds);
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  return `${Math.floor(minutes / 60)}h ago`;
+  if (minutes < 60) return t('minutesAgo', minutes);
+  return t('hoursAgo', Math.floor(minutes / 60));
 }

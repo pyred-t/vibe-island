@@ -1039,3 +1039,314 @@ html, body {
   gap: 8px;
   justify-content: flex-end;
 }
+
+/* ─── Crab Icon ──────────────────────────────────────────────── */
+
+.crab-icon-header {
+  display: block;
+  image-rendering: pixelated;
+  flex-shrink: 0;
+}
+
+.session-status-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.session-status-icon canvas {
+  image-rendering: pixelated;
+  display: block;
+}
+
+@keyframes spin-icon {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+@keyframes pulse-icon {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+/* ─── Settings Select ────────────────────────────────────────── */
+
+.setting-select {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 12px;
+  padding: 5px 8px;
+  font-family: 'Inter', sans-serif;
+  outline: none;
+  cursor: pointer;
+  min-width: 100px;
+}
+
+.setting-select:focus {
+  border-color: var(--accent);
+}
+
+.setting-select option {
+  background: #1c1c26;
+  color: var(--text-primary);
+}
+
+/* ─── In-App Notifications ───────────────────────────────────── */
+
+#notificationContainer {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: calc(100% - 24px);
+  max-width: 380px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.notif-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  pointer-events: all;
+  opacity: 0;
+  transform: translateY(-8px) scale(0.97);
+  transition: opacity 0.25s ease, transform 0.25s cubic-bezier(0.16,1,0.3,1);
+  backdrop-filter: blur(12px);
+}
+
+.notif-card.visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.notif-card.dismissing {
+  opacity: 0;
+  transform: translateY(-6px) scale(0.97);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.notif-card.notif-warning {
+  border-color: rgba(245, 158, 11, 0.25);
+}
+
+.notif-card.notif-success {
+  border-color: rgba(34, 197, 94, 0.2);
+}
+
+.notif-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.notif-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.notif-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 2px;
+}
+
+.notif-text {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.notif-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 10px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  line-height: 1;
+  transition: color var(--transition-fast);
+}
+
+.notif-close:hover {
+  color: var(--text-primary);
+}
+
+/* ─── Permission Preview (Code Preview) ─────────────────────── */
+
+.permission-section {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.perm-preview {
+  margin-bottom: 8px;
+}
+
+.perm-preview-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.perm-tool-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--warning);
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+}
+
+.perm-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.perm-description {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.perm-filepath {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.perm-filepath-icon {
+  flex-shrink: 0;
+}
+
+.perm-url {
+  color: var(--info);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.perm-meta {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+}
+
+.perm-kv-row {
+  display: flex;
+  gap: 6px;
+  font-size: 11px;
+  align-items: baseline;
+}
+
+.perm-kv-key {
+  color: var(--text-muted);
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  flex-shrink: 0;
+}
+
+.perm-kv-val {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.perm-code-wrapper {
+  position: relative;
+  max-height: 160px;
+  overflow: hidden;
+}
+
+.perm-code-wrapper:hover {
+  max-height: 300px;
+  overflow-y: auto;
+  transition: max-height 0.2s ease;
+}
+
+.perm-code {
+  margin: 0;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-size: 10px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-y: auto;
+  max-height: 150px;
+}
+
+.perm-code::-webkit-scrollbar { width: 3px; }
+.perm-code::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+
+.perm-expand-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 2px 0;
+  text-align: left;
+  transition: color var(--transition-fast);
+}
+
+.perm-expand-btn:hover {
+  color: var(--text-secondary);
+}
+
+.perm-diff {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.perm-diff-block {
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 10px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 80px;
+  overflow-y: auto;
+}
+
+.perm-diff-old {
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.15);
+  color: rgba(239, 68, 68, 0.8);
+}
+
+.perm-diff-new {
+  background: rgba(34, 197, 94, 0.08);
+  border: 1px solid rgba(34, 197, 94, 0.15);
+  color: rgba(34, 197, 94, 0.8);
+}
+
+.perm-json-rest {
+  margin-top: 2px;
+}

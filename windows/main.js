@@ -296,15 +296,17 @@ function wireEvents() {
   SessionStore.on('sessionCreated', (session) => {
     const hostLabel = session.isRemote ? session.hostname : 'local';
     console.log(`[Session] New session: ${session.sessionId} host=${hostLabel} cwd=${session.cwd}`);
-    showWindow();
   });
 
   SessionStore.on('phaseChanged', (session, prevPhase, newPhase) => {
     console.log(`[Session] ${session.sessionId} phase: ${prevPhase} -> ${newPhase}`);
     notification.onPhaseChanged(session, prevPhase, newPhase);
 
-    // Auto-show window on permission request
-    if (newPhase === SessionPhase.WAITING_FOR_APPROVAL) {
+    // Show window for all phases except processing/ended
+    if (
+      newPhase !== SessionPhase.PROCESSING &&
+      newPhase !== SessionPhase.ENDED
+    ) {
       showWindow();
     }
   });

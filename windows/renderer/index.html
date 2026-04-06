@@ -14,8 +14,8 @@
     <!-- Header -->
     <div class="header" id="header">
       <div class="header-left">
-        <div class="logo-dot" id="statusDot"></div>
-        <span class="header-title">Claude Island</span>
+        <canvas id="crabIcon" class="crab-icon-header"></canvas>
+        <span class="header-title" id="headerTitle">Claude Island</span>
       </div>
       <div class="header-right">
         <button class="icon-btn" id="settingsBtn" title="Settings">
@@ -44,8 +44,8 @@
                 <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
               </svg>
             </div>
-            <p class="empty-title">No Active Sessions</p>
-            <p class="empty-subtitle">Start Claude Code to see sessions here</p>
+            <p class="empty-title" id="emptyTitle">No Active Sessions</p>
+            <p class="empty-subtitle" id="emptySubtitle">Start Claude Code to see sessions here</p>
           </div>
         </div>
       </div>
@@ -55,7 +55,7 @@
         <div class="settings-content">
 
           <!-- SSH Config Path -->
-          <h3 class="settings-section-title">SSH Config</h3>
+          <h3 class="settings-section-title" id="sLabel_sshConfig">SSH Config</h3>
           <div class="ssh-config-row" id="sshConfigRow">
             <span class="ssh-config-path" id="sshConfigPathDisplay">Detecting...</span>
             <button class="btn btn-ghost btn-sm" id="sshConfigBrowseBtn">Browse</button>
@@ -63,34 +63,55 @@
           </div>
 
           <!-- Machines -->
-          <h3 class="settings-section-title" style="margin-top:18px">Machines</h3>
+          <h3 class="settings-section-title" id="sLabel_machines" style="margin-top:18px">Machines</h3>
           <div id="machinesList"></div>
           <div style="display:flex; gap:6px; margin-top:6px">
             <button class="btn btn-outline btn-sm" id="importSshHostBtn">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-              Import from SSH Config
+              <span id="sLabel_importFromSshConfig">Import from SSH Config</span>
             </button>
             <button class="btn btn-outline btn-sm" id="addCustomHostBtn">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-              Add Custom Host
+              <span id="sLabel_addCustomHost">Add Custom Host</span>
             </button>
           </div>
 
           <!-- Server -->
-          <h3 class="settings-section-title" style="margin-top:18px">Server</h3>
+          <h3 class="settings-section-title" id="sLabel_server" style="margin-top:18px">Server</h3>
           <div class="setting-row">
-            <label>TCP Port</label>
+            <label id="sLabel_tcpPort">TCP Port</label>
             <input type="number" id="portInput" class="setting-input" min="1024" max="65535" />
           </div>
 
           <!-- Notifications -->
-          <h3 class="settings-section-title" style="margin-top:18px">Notifications</h3>
+          <h3 class="settings-section-title" id="sLabel_notifications" style="margin-top:18px">Notifications</h3>
           <div class="setting-row">
-            <label>Enable notifications</label>
-            <label class="toggle">
-              <input type="checkbox" id="notifToggle" />
-              <span class="toggle-slider"></span>
-            </label>
+            <label id="sLabel_notificationMode">Notification mode</label>
+            <select id="notifModeSelect" class="setting-select">
+              <option value="inapp">In-app</option>
+              <option value="system">System</option>
+              <option value="off">Off</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <label id="sLabel_notificationSound">Sound</label>
+            <select id="notifSoundSelect" class="setting-select">
+              <option value="none">None</option>
+              <option value="pop" selected>Pop</option>
+              <option value="ping">Ping</option>
+              <option value="bell">Bell</option>
+              <option value="chime">Chime</option>
+            </select>
+          </div>
+
+          <!-- Appearance -->
+          <h3 class="settings-section-title" id="sLabel_appearance" style="margin-top:18px">Appearance</h3>
+          <div class="setting-row">
+            <label id="sLabel_language">Language</label>
+            <select id="langSelect" class="setting-select">
+              <option value="zh">中文</option>
+              <option value="en">English</option>
+            </select>
           </div>
 
         </div>
@@ -98,11 +119,14 @@
     </div>
   </div>
 
+  <!-- In-App Notification Container -->
+  <div id="notificationContainer"></div>
+
   <!-- Import SSH Host Dialog -->
   <div id="importDialog" class="auth-dialog hidden">
     <div class="auth-dialog-card">
-      <div class="auth-dialog-title">Import SSH Host</div>
-      <div class="auth-dialog-body">Select a host from your SSH config to add as a remote machine:</div>
+      <div class="auth-dialog-title" id="importDialogTitle">Import SSH Host</div>
+      <div class="auth-dialog-body" id="importDialogBody">Select a host from your SSH config to add as a remote machine:</div>
       <div id="importHostList" style="margin-bottom:12px;max-height:160px;overflow-y:auto"></div>
       <div class="auth-dialog-actions">
         <button class="btn btn-ghost btn-sm" id="importDialogCancelBtn">Cancel</button>
@@ -115,12 +139,12 @@
     <div class="auth-dialog-card">
       <div class="auth-dialog-icon">⚠</div>
       <div class="auth-dialog-title" id="authDialogTitle">Authentication Required</div>
-      <div class="auth-dialog-body">
+      <div class="auth-dialog-body" id="authDialogBody">
         Your SSH key needs to be added to the SSH Agent.<br>Run in any terminal:
       </div>
       <div class="auth-dialog-cmd">
         <code id="authDialogCmd">ssh-add</code>
-        <button class="btn btn-ghost btn-sm" id="authDialogCopyBtn" title="Copy">Copy</button>
+        <button class="btn btn-ghost btn-sm" id="authDialogCopyBtn">Copy</button>
       </div>
       <div class="auth-dialog-actions">
         <button class="btn btn-primary btn-sm" id="authDialogRetryBtn">Retry</button>
@@ -129,6 +153,10 @@
     </div>
   </div>
 
+  <script src="i18n.js"></script>
+  <script src="pixel-icons.js"></script>
+  <script src="notifications.js"></script>
+  <script src="code-preview.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

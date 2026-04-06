@@ -234,7 +234,7 @@ class TunnelManager extends EventEmitter {
       }
 
       // Update settings.json hooks using Python (preserves other config)
-      const hookCmd = `python3 ${claudePath}/hooks/claude-island-state.py --port ${port}`;
+      const hookCmd = `python3 ${claudePath}/hooks/claude-island-state.py --port ${port} --machine ${hostAlias}`;
       const py = [
         'import json,os',
         `p=os.path.expanduser("${claudePath}/settings.json")`,

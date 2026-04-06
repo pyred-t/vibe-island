@@ -157,10 +157,17 @@ def main():
         default=None,
         help=f"Host to connect to (default: auto-detect, usually {DEFAULT_HOST})",
     )
+    parser.add_argument(
+        "--machine",
+        type=str,
+        default=None,
+        help="Machine alias/label to identify this remote host (injected by tunnel-manager)",
+    )
     args = parser.parse_args()
 
     host = args.host or detect_host()
     port = args.port
+    machine_alias = args.machine
 
     try:
         data = json.load(sys.stdin)
@@ -184,10 +191,8 @@ def main():
         "pid": claude_pid,
         "tty": tty,
         "agent_id": AGENT_ID,
-        "hostname": socket.gethostname(),
-        "is_remote": bool(
-            os.environ.get("SSH_CLIENT") or os.environ.get("SSH_TTY")
-        ),
+        "hostname": machine_alias or socket.gethostname(),
+        "is_remote": bool(machine_alias or os.environ.get("SSH_CLIENT") or os.environ.get("SSH_TTY")),
         "raw_payload": data,
     }
 
