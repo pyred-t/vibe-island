@@ -90,4 +90,5 @@ contextBridge.exposeInMainWorld('claudeIsland', {
   // ─── Window controls ──────────────────────────────────────────
   hideWindow: () => ipcRenderer.send('hide-window'),
   selectDirectory: () => ipcRenderer.invoke('select-directory'),
+  checkFirewall: () => ipcRenderer.invoke('check-firewall'),
 });

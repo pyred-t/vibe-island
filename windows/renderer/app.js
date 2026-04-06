@@ -126,8 +126,34 @@ document.addEventListener('DOMContentLoaded', async () => {
   portInput.value = config.port || 51515;
   portInput.addEventListener('change', () => {
     const port = parseInt(portInput.value);
-    if (port >= 1024 && port <= 65535) window.claudeIsland.setConfig('port', port);
+    if (port >= 1024 && port <= 65535) {
+      config.port = port;
+      window.claudeIsland.setConfig('port', port);
+    }
   });
+
+  // Listen host input
+  const listenHostInput = document.getElementById('listenHostInput');
+  if (listenHostInput) {
+    listenHostInput.value = config.listenHost || '127.0.0.1';
+    listenHostInput.addEventListener('change', () => {
+      const h = listenHostInput.value.trim();
+      if (h) {
+        config.listenHost = h;
+        window.claudeIsland.setConfig('listenHost', h);
+        autoCheckFirewall();
+      }
+    });
+  }
+
+  // Firewall check button
+  const firewallBtn = document.getElementById('firewallBtn');
+  const firewallStatus = document.getElementById('firewallStatus');
+  if (firewallBtn) {
+    firewallBtn.addEventListener('click', async () => {
+      await runFirewallFix();
+    });
+  }
 
   // Notification mode select
   const notifModeSelect = document.getElementById('notifModeSelect');
@@ -206,6 +232,8 @@ function applyI18n() {
     sLabel_notifications: 'notifications',
     sLabel_appearance: 'appearance',
     sLabel_tcpPort: 'tcpPort',
+    sLabel_listenHost: 'listenHost',
+    sLabel_firewallBtn: 'firewallBtn',
     sLabel_notificationMode: 'notificationMode',
     sLabel_notificationSound: 'notificationSound',
     sLabel_language: 'language',
@@ -299,6 +327,52 @@ function _checkNotifications(prev, next) {
   */
 }
 
+// ─── Firewall ──────────────────────────────────────────────────
+
+function _showFirewallStatus(color, text, html) {
+  const el = document.getElementById('firewallStatus');
+  if (!el) return;
+  el.style.display = 'block';
+  el.style.color = color;
+  if (html) el.innerHTML = html;
+  else el.textContent = text;
+}
+
+function _hideFirewallStatus() {
+  const el = document.getElementById('firewallStatus');
+  if (el) el.style.display = 'none';
+}
+
+/** Check connectivity and show guidance if blocked */
+async function autoCheckFirewall() {
+  const btn = document.getElementById('firewallBtn');
+  try {
+    const result = await window.claudeIsland.checkFirewall();
+    if (result.status === 'loopback') {
+      _showFirewallStatus('var(--color-success, #4caf50)', i18n.t('firewallLoopback'));
+      if (btn) btn.style.display = 'none';
+    } else if (result.status === 'ok') {
+      _showFirewallStatus('var(--color-success, #4caf50)', i18n.t('firewallOk', result.port));
+      if (btn) btn.style.display = 'none';
+    } else {
+      // blocked — show guidance
+      _showFirewallStatus('var(--color-warning, #ff9800)', '', i18n.t('firewallBlocked', result.port));
+      if (btn) { btn.style.display = ''; btn.textContent = i18n.t('firewallBtn'); }
+    }
+  } catch {
+    _hideFirewallStatus();
+    if (btn) btn.style.display = 'none';
+  }
+}
+
+/** Re-check button click */
+async function runFirewallFix() {
+  const btn = document.getElementById('firewallBtn');
+  if (btn) { btn.disabled = true; btn.textContent = i18n.t('firewallChecking'); }
+  await autoCheckFirewall();
+  if (btn) btn.disabled = false;
+}
+
 // ─── View ────────────────────────────────────────────────────────
 
 function toggleSettings() {
@@ -309,6 +383,7 @@ function toggleSettings() {
     stv.classList.remove('hidden');
     currentView = 'settings';
     renderSettings();
+    autoCheckFirewall();
   } else {
     stv.classList.add('hidden');
     sv.classList.remove('hidden');
@@ -492,6 +567,8 @@ async function handleArchive(sessionId) {
 function renderSettings() {
   renderMachines();
   document.getElementById('portInput').value = config.port || 51515;
+  const listenHostEl = document.getElementById('listenHostInput');
+  if (listenHostEl) listenHostEl.value = config.listenHost || '127.0.0.1';
 
   // Read live values from localStorage/module state, not stale config snapshot
   const notifModeSelect = document.getElementById('notifModeSelect');

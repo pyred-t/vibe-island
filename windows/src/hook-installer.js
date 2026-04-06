@@ -75,14 +75,19 @@ class HookInstaller {
     }
 
     const port = configStore.get('port') || 51515;
+    const listenHost = configStore.get('listenHost') || '127.0.0.1';
     const isWSL = this._isWSLPath(claudeConfigPath);
 
     let commandPath;
     if (isWSL) {
       const wslScriptPath = this._windowsToWSLPath(destScript);
-      commandPath = `python3 ${wslScriptPath} --port ${port}`;
+      // When listenHost is 0.0.0.0, the hook inside WSL must connect to the
+      // Windows host IP (from /etc/resolv.conf), not 127.0.0.1.
+      const wslConnectHost = listenHost === '0.0.0.0' ? '$(awk \'/^nameserver/{print $2;exit}\' /etc/resolv.conf)' : listenHost;
+      commandPath = `python3 ${wslScriptPath} --port ${port} --host ${wslConnectHost}`;
     } else {
-      commandPath = `python "${destScript}" --port ${port}`;
+      const hostArg = listenHost === '0.0.0.0' ? '127.0.0.1' : listenHost;
+      commandPath = `python "${destScript}" --port ${port} --host ${hostArg}`;
     }
 
     const hookConfig = this._buildHookConfig(commandPath);

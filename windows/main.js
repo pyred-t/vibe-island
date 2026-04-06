@@ -7,6 +7,7 @@
 // when running via electron.exe
 const { app, BrowserWindow, ipcMain, screen, dialog } = require('electron');
 const path = require('path');
+const net = require('net');
 
 let configStore, hookServer, SessionStore, SessionPhase, hookInstaller, trayManager, notification;
 let sshConfigReader, tunnelManager, TunnelStatus, remoteHostStore;
@@ -149,6 +150,28 @@ function setupIPC() {
 
   ipcMain.handle('get-config', () => configStore.getAll());
 
+  ipcMain.handle('check-firewall', async () => {
+    const port = configStore.get('port') || 51515;
+    const listenHost = configStore.get('listenHost') || '127.0.0.1';
+
+    if (listenHost === '127.0.0.1') {
+      return { status: 'loopback' };
+    }
+
+    // Try a quick TCP self-connect to see if the port is reachable
+    const net = require('net');
+    const reachable = await new Promise((resolve) => {
+      const sock = net.createConnection({ host: listenHost, port }, () => {
+        sock.destroy();
+        resolve(true);
+      });
+      sock.on('error', () => resolve(false));
+      sock.setTimeout(2000, () => { sock.destroy(); resolve(false); });
+    });
+
+    return { status: reachable ? 'ok' : 'blocked', port, listenHost };
+  });
+
   ipcMain.handle('set-config', (_event, key, value) => {
     configStore.set(key, value);
     // If SSH config path changed, reload the reader
@@ -157,6 +180,15 @@ function setupIPC() {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('ssh-hosts-changed', sshConfigReader.getHosts());
       }
+    }
+    // If port or listenHost changed, restart the hook server and reinstall hooks
+    if (key === 'port' || key === 'listenHost') {
+      hookServer.stop();
+      const newPort = configStore.get('port') || 51515;
+      const newHost = configStore.get('listenHost') || '127.0.0.1';
+      hookServer.start(newPort, newHost);
+      // Reinstall hooks so settings.json gets the updated --host / --port args
+      hookInstaller.installAll();
     }
     return true;
   });
@@ -404,7 +436,8 @@ app.whenReady().then(() => {
 
   // Start hook server
   const port = configStore.get('port') || 51515;
-  hookServer.start(port);
+  const listenHost = configStore.get('listenHost') || '127.0.0.1';
+  hookServer.start(port, listenHost);
 
   // Install hooks on local paths
   hookInstaller.installAll();

@@ -15,9 +15,9 @@ class HookServer extends EventEmitter {
   }
 
   /**
-   * Start the TCP server on the given port
+   * Start the TCP server on the given port and host
    */
-  start(port = 51515) {
+  start(port = 51515, host = '127.0.0.1') {
     if (this._server) return;
 
     this._server = net.createServer((socket) => {
@@ -30,8 +30,8 @@ class HookServer extends EventEmitter {
       this.emit('error', err);
     });
 
-    this._server.listen(port, '127.0.0.1', () => {
-      console.log(`Hook server listening on 127.0.0.1:${port}`);
+    this._server.listen(port, host, () => {
+      console.log(`Hook server listening on ${host}:${port}`);
       this.emit('started', port);
     });
   }

@@ -42,6 +42,7 @@ const defaultLocalMachine = () => ({
 
 const DEFAULT_CONFIG = {
   port: 51515,
+  listenHost: '127.0.0.1',      // bind address; set to 0.0.0.0 for WSL2 non-mirror mode
   sshConfigPath: null,          // null = auto-detect from VSCode or ~/.ssh/config
   enableNotifications: true,
   notificationSound: true,

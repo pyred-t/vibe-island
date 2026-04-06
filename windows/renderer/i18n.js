@@ -59,6 +59,12 @@ const i18n = (() => {
 
       // Settings labels
       tcpPort: 'TCP Port',
+      listenHost: 'Listen Host',
+      firewallBtn: 'Re-check',
+      firewallChecking: 'Checking…',
+      firewallLoopback: 'Loopback mode — no firewall rule needed.',
+      firewallOk: (port) => `Port ${port} is reachable.`,
+      firewallBlocked: (port) => `Port ${port} is blocked. On Win10 WSL2, run in an elevated PowerShell:<br><code style="user-select:all">Set-NetFirewallProfile -DisabledInterfaceAliases "vEthernet (WSL)"</code><br><span style="font-size:10px;opacity:0.7">This disables firewall on the WSL virtual adapter only. To revert: <code style="user-select:all">Set-NetFirewallProfile -DisabledInterfaceAliases @()</code></span>`,
       enableNotifications: 'Enable notifications',
       notificationMode: 'Notification mode',
       notifModeSystem: 'System',
@@ -181,6 +187,12 @@ const i18n = (() => {
 
       // Settings labels
       tcpPort: 'TCP 端口',
+      listenHost: '监听地址',
+      firewallBtn: '重新检测',
+      firewallChecking: '检测中…',
+      firewallLoopback: '回环模式，无需防火墙规则。',
+      firewallOk: (port) => `端口 ${port} 可达。`,
+      firewallBlocked: (port) => `端口 ${port} 被阻止。Win10 WSL2 请在管理员 PowerShell 中运行：<br><code style="user-select:all">Set-NetFirewallProfile -DisabledInterfaceAliases "vEthernet (WSL)"</code><br><span style="font-size:10px;opacity:0.7">仅关闭 WSL 虚拟网卡的防火墙。恢复命令：<code style="user-select:all">Set-NetFirewallProfile -DisabledInterfaceAliases @()</code></span>`,
       enableNotifications: '启用通知',
       notificationMode: '通知方式',
       notifModeSystem: '系统通知',

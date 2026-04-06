@@ -82,6 +82,12 @@
             <label id="sLabel_tcpPort">TCP Port</label>
             <input type="number" id="portInput" class="setting-input" min="1024" max="65535" />
           </div>
+          <div class="setting-row">
+            <label id="sLabel_listenHost">Listen Host</label>
+            <input type="text" id="listenHostInput" class="setting-input" placeholder="127.0.0.1" />
+            <button id="firewallBtn" class="btn btn-sm btn-outline" style="display:none"><span id="sLabel_firewallBtn">Re-check</span></button>
+          </div>
+          <div id="firewallStatus" style="font-size:11px;margin-top:2px;padding-left:4px;display:none"></div>
 
           <!-- Notifications -->
           <h3 class="settings-section-title" id="sLabel_notifications" style="margin-top:18px">Notifications</h3>

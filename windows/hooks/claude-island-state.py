@@ -33,6 +33,7 @@ AGENT_ID = "claude"
 DEFAULT_PORT = 51515
 DEFAULT_HOST = "127.0.0.1"
 TIMEOUT_SECONDS = 300  # 5 minutes for permission decisions
+CONNECT_TIMEOUT = 3  # seconds — short so hooks don't block Claude Code
 
 
 def get_tty():
@@ -74,26 +75,41 @@ def get_tty():
 def detect_host():
     """
     Detect the correct host to connect to.
-    In WSL, we need to connect to the Windows host.
+    In WSL2 non-mirror mode, we need to connect to the Windows host IP
+    (the nameserver entry in /etc/resolv.conf).
     """
-    # Check if we're in WSL
-    if _is_wsl():
-        # In WSL2, localhost usually works (mirrors Windows host)
-        # But if it doesn't, try to get the Windows host IP
-        try:
-            # WSL2: read the nameserver from /etc/resolv.conf (Windows host IP)
-            with open("/etc/resolv.conf", "r") as f:
-                for line in f:
-                    if line.startswith("nameserver"):
-                        host_ip = line.split()[1].strip()
-                        if host_ip and host_ip != "127.0.0.1":
-                            # Try localhost first (WSL2 mirroring), fallback to host IP
-                            return DEFAULT_HOST
-            return DEFAULT_HOST
-        except Exception:
-            return DEFAULT_HOST
+    if not _is_wsl():
+        return DEFAULT_HOST
+
+    # Try 127.0.0.1 first (works for WSL2 mirror mode and WSL1)
+    # If that fails, fall back to the Windows host IP from resolv.conf
+    if _can_connect(DEFAULT_HOST, DEFAULT_PORT, timeout=0.5):
+        return DEFAULT_HOST
+
+    # WSL2 non-mirror: Windows host is the nameserver
+    try:
+        with open("/etc/resolv.conf", "r") as f:
+            for line in f:
+                if line.startswith("nameserver"):
+                    host_ip = line.split()[1].strip()
+                    if host_ip and host_ip != "127.0.0.1":
+                        return host_ip
+    except Exception:
+        pass
 
     return DEFAULT_HOST
+
+
+def _can_connect(host, port, timeout=0.5):
+    """Quick probe: can we reach host:port?"""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect((host, port))
+        s.close()
+        return True
+    except Exception:
+        return False
 
 
 def _is_wsl():
@@ -111,8 +127,11 @@ def send_event(state, host, port, timeout=None):
     effective_timeout = timeout if timeout is not None else TIMEOUT_SECONDS
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(effective_timeout)
+        # Use a short connect timeout so we fail fast when firewall drops packets
+        sock.settimeout(CONNECT_TIMEOUT)
         sock.connect((host, port))
+        # After connect succeeds, switch to the longer read timeout for permission waits
+        sock.settimeout(effective_timeout)
         sock.sendall(json.dumps(state).encode())
 
         should_wait = state.get("status") == "waiting_for_approval" or (
