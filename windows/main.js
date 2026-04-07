@@ -33,6 +33,8 @@ if (!gotTheLock) {
 
 // ─── Window Creation ─────────────────────────────────────────
 
+let isPinned = false;
+
 function createWindow() {
   const { width: screenWidth, height: screenHeight } = screen.getPrimaryDisplay().workAreaSize;
 
@@ -52,7 +54,7 @@ function createWindow() {
     transparent: true,
     resizable: false,
     skipTaskbar: true,
-    alwaysOnTop: true,
+    alwaysOnTop: false,
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -64,10 +66,10 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 
   // Use 'pop-up-menu' level so blur fires reliably when clicking outside
-  mainWindow.setAlwaysOnTop(true, 'pop-up-menu');
+  mainWindow.setAlwaysOnTop(false, 'pop-up-menu');
 
   mainWindow.on('blur', () => {
-    if (!isQuitting && mainWindow && mainWindow.isVisible()) {
+    if (!isQuitting && !isPinned && mainWindow && mainWindow.isVisible()) {
       // Small delay so clicking tray icon doesn't instantly hide
       setTimeout(() => {
         if (mainWindow && !mainWindow.isFocused()) mainWindow.hide();
@@ -299,6 +301,13 @@ function setupIPC() {
 
   ipcMain.on('hide-window', () => {
     if (mainWindow) mainWindow.hide();
+  });
+
+  ipcMain.handle('toggle-pin', () => {
+    if (!mainWindow) return false;
+    isPinned = !isPinned;
+    mainWindow.setAlwaysOnTop(isPinned, 'floating');
+    return isPinned;
   });
 
   ipcMain.handle('select-directory', async () => {

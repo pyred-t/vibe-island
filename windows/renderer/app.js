@@ -86,6 +86,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Header buttons
   document.getElementById('settingsBtn').addEventListener('click', toggleSettings);
   document.getElementById('closeBtn').addEventListener('click', () => window.claudeIsland.hideWindow());
+  const pinBtn = document.getElementById('pinBtn');
+  if (pinBtn) {
+    pinBtn.addEventListener('click', async () => {
+      const pinned = await window.claudeIsland.togglePin();
+      pinBtn.classList.toggle('active', pinned);
+    });
+  }
 
   // SSH config browse / reset
   document.getElementById('sshConfigBrowseBtn')?.addEventListener('click', async () => {

@@ -159,6 +159,10 @@ html, body {
   background: var(--bg-glass);
 }
 
+.icon-btn.active {
+  color: var(--text-primary);
+}
+
 /* ─── Content Area ───────────────────────────────────────────── */
 
 .content {
