@@ -88,6 +88,9 @@ function createWindow() {
 function showWindow() {
   if (!mainWindow) return;
 
+  // If already visible, don't reposition or re-focus (avoids flicker)
+  if (mainWindow.isVisible()) return;
+
   // Reposition near tray area (bottom-right)
   const { width: screenWidth, height: screenHeight } = screen.getPrimaryDisplay().workAreaSize;
   const [winWidth, winHeight] = mainWindow.getSize();
@@ -95,7 +98,7 @@ function showWindow() {
 
   mainWindow.show();
   // On Windows, force focus so blur event fires when clicking outside
-  mainWindow.setAlwaysOnTop(true, 'pop-up-menu');
+  if (isPinned) mainWindow.setAlwaysOnTop(true, 'pop-up-menu');
   mainWindow.moveTop();
   mainWindow.focus();
   mainWindow.setAlwaysOnTop(true, 'pop-up-menu');

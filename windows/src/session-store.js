@@ -12,6 +12,7 @@ const SessionPhase = {
   PROCESSING: 'processing',
   WAITING_FOR_INPUT: 'waiting_for_input',
   WAITING_FOR_APPROVAL: 'waiting_for_approval',
+  PLAN_READY: 'plan_ready',
   COMPACTING: 'compacting',
   ENDED: 'ended',
 };
@@ -72,6 +73,9 @@ class SessionStore extends EventEmitter {
         toolInput: event.tool_input || {},
         receivedAt: new Date(),
       };
+    } else if (event.event === 'PreToolUse' && event.tool === 'ExitPlanMode') {
+      // Store plan content from tool_input
+      session.activePlan = event.tool_input || {};
     } else if (session.activeInteraction && event.event !== 'PreToolUse') {
       // Clear interaction when any non-PreToolUse event arrives (PostToolUse, new phase, etc.)
       session.activeInteraction = null;
@@ -150,6 +154,8 @@ class SessionStore extends EventEmitter {
         return SessionPhase.WAITING_FOR_APPROVAL;
       case 'waiting_for_input':
         return SessionPhase.WAITING_FOR_INPUT;
+      case 'plan_ready':
+        return SessionPhase.PLAN_READY;
       case 'running_tool':
       case 'processing':
       case 'starting':

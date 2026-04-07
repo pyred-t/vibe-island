@@ -14,6 +14,8 @@ const i18n = (() => {
       phase_processing: 'Processing',
       phase_waiting_for_input: 'Ready',
       phase_waiting_for_approval: 'Needs Approval',
+      phase_plan_ready: 'Plan Ready',
+      planReady: 'Plan',
       phase_compacting: 'Compacting',
       phase_ended: 'Ended',
 
@@ -56,6 +58,7 @@ const i18n = (() => {
       notifications: 'Notifications',
       appearance: 'Appearance',
       language: 'Language',
+      opacity: 'Opacity',
 
       // Settings labels
       tcpPort: 'TCP Port',
@@ -142,6 +145,8 @@ const i18n = (() => {
       phase_processing: '处理中',
       phase_waiting_for_input: '就绪',
       phase_waiting_for_approval: '需要审批',
+      phase_plan_ready: '计划就绪',
+      planReady: '计划',
       phase_compacting: '压缩中',
       phase_ended: '已结束',
 
@@ -184,6 +189,7 @@ const i18n = (() => {
       notifications: '通知',
       appearance: '外观',
       language: '语言',
+      opacity: '不透明度',
 
       // Settings labels
       tcpPort: 'TCP 端口',

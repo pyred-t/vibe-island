@@ -40,6 +40,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Load config & data
   sessions = await window.claudeIsland.getSessions();
   config = await window.claudeIsland.getConfig();
+  // Apply saved opacity
+  if (config.opacity != null) {
+    document.documentElement.style.setProperty('--bg-primary', `rgba(18,18,24,${config.opacity})`);
+  }
   machines = await window.claudeIsland.getMachines();
   sshHosts = await window.claudeIsland.getSshHosts();
   remoteStatuses = await window.claudeIsland.getRemoteStatuses();
@@ -204,6 +208,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
+  // Opacity slider
+  const opacitySlider = document.getElementById('opacitySlider');
+  const opacityValue = document.getElementById('opacityValue');
+  if (opacitySlider) {
+    opacitySlider.addEventListener('input', () => {
+      const val = parseInt(opacitySlider.value);
+      if (opacityValue) opacityValue.textContent = val + '%';
+      document.documentElement.style.setProperty('--bg-primary', `rgba(18,18,24,${val/100})`);
+      window.claudeIsland.setConfig('opacity', val / 100);
+    });
+  }
+
   // Auth dialog buttons
   document.getElementById('authDialogCopyBtn')?.addEventListener('click', () => {
     navigator.clipboard.writeText('ssh-add').catch(() => {});
@@ -244,6 +260,7 @@ function applyI18n() {
     sLabel_notificationMode: 'notificationMode',
     sLabel_notificationSound: 'notificationSound',
     sLabel_language: 'language',
+    sLabel_opacity: 'opacity',
     sLabel_importFromSshConfig: 'importFromSshConfig',
     sLabel_addCustomHost: 'addCustomHost',
     // Dialogs
@@ -427,10 +444,98 @@ function renderSessions() {
   });
   display.forEach(session => {
     const existing = container.querySelector(`[data-session-id="${session.sessionId}"]`);
-    const newCard = createSessionCard(session);
-    if (existing) container.replaceChild(newCard, existing);
-    else container.insertBefore(newCard, container.firstChild);
+    if (existing) {
+      updateSessionCard(existing, session);
+    } else {
+      const newCard = createSessionCard(session);
+      container.insertBefore(newCard, container.firstChild);
+    }
   });
+}
+
+function updateSessionCard(card, session) {
+  const { t } = i18n;
+  // Update phase class
+  card.className = `session-card ${session.phase}`;
+
+  // Phase label
+  const phaseKey = `phase_${session.phase}`;
+  const phaseLabel = t(phaseKey) !== phaseKey ? t(phaseKey) : session.phase;
+  const labelEl = card.querySelector('.session-phase-label');
+  if (labelEl) { labelEl.textContent = phaseLabel; labelEl.className = `session-phase-label ${session.phase}`; }
+
+  // Status icon
+  const iconSlot = card.querySelector('.session-status-icon');
+  if (iconSlot) {
+    iconSlot.innerHTML = '';
+    iconSlot.appendChild(PixelIcons.createStatusIcon(session.phase, 14));
+  }
+
+  // Tool info
+  const timeEl = card.querySelector('.session-time');
+  let toolEl = card.querySelector('.session-tool');
+  if (session.lastTool && session.phase !== 'ended') {
+    const toolHtml = `<span class="session-tool-icon">⚙</span><span class="session-tool-name">${escapeHtml(session.lastTool)}</span>${session.lastToolInput?.file_path ? `<span style="color:var(--text-muted);font-size:10px;margin-left:2px">${escapeHtml(session.lastToolInput.file_path)}</span>` : ''}`;
+    if (toolEl) { toolEl.innerHTML = toolHtml; }
+    else if (timeEl) {
+      toolEl = document.createElement('div');
+      toolEl.className = 'session-tool';
+      toolEl.innerHTML = toolHtml;
+      timeEl.before(toolEl);
+    }
+  } else if (toolEl) { toolEl.remove(); }
+
+  // Time
+  if (timeEl) timeEl.textContent = formatTimeAgo(session.lastEventAt);
+
+  // Permission / interaction sections — only rebuild if phase changed
+  const prevPhase = card.dataset.phase;
+  if (prevPhase !== session.phase ||
+      JSON.stringify(session.activePermission) !== card.dataset.permHash ||
+      JSON.stringify(session.activeInteraction) !== card.dataset.interHash) {
+    card.dataset.phase = session.phase;
+    card.dataset.permHash = JSON.stringify(session.activePermission);
+    card.dataset.interHash = JSON.stringify(session.activeInteraction);
+    card.querySelectorAll('.permission-section, .interaction-section').forEach(el => el.remove());
+    // Re-append permission/interaction using same logic as createSessionCard
+    _appendDynamicSections(card, session);
+  }
+}
+
+function _appendDynamicSections(card, session) {
+  const { t } = i18n;
+
+  if (session.phase === 'waiting_for_approval' && session.activePermission) {
+    const p = session.activePermission;
+    const permSection = document.createElement('div');
+    permSection.className = 'permission-section';
+
+    if (p.toolName === 'ExitPlanMode') {
+      // Render plan content instead of generic tool preview
+      const planText = (session.activePlan && session.activePlan.plan) || '';
+      const content = document.createElement('div');
+      content.className = 'interaction-question';
+      content.innerHTML = planText ? MarkdownLite.render(planText) : '(no plan content)';
+      permSection.appendChild(content);
+    } else {
+      permSection.appendChild(CodePreview.buildPermissionPreview(p));
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'permission-actions';
+    actions.innerHTML = `
+      <button class="btn btn-success btn-sm" onclick="handleApprove('${session.sessionId}','${p.toolUseId}')">${t('allow')}</button>
+      <button class="btn btn-warning btn-sm" onclick="handleAlwaysAllow('${session.sessionId}','${p.toolUseId}')">${t('alwaysAllow')}</button>
+      <button class="btn btn-danger btn-sm" onclick="handleDeny('${session.sessionId}','${p.toolUseId}')">${t('deny')}</button>`;
+    permSection.appendChild(actions);
+    card.appendChild(permSection);
+  }
+  if (session.phase === 'waiting_for_input' && session.activeInteraction) {
+    // delegate to createSessionCard's interaction logic by cloning from a temp card
+    const tmp = createSessionCard(session);
+    const sec = tmp.querySelector('.interaction-section');
+    if (sec) card.appendChild(sec);
+  }
 }
 
 function createSessionCard(session) {
@@ -590,6 +695,14 @@ function renderSettings() {
 
   const langSelect = document.getElementById('langSelect');
   if (langSelect) langSelect.value = i18n.getLang();
+
+  const opacitySlider = document.getElementById('opacitySlider');
+  const opacityValue = document.getElementById('opacityValue');
+  if (opacitySlider) {
+    const saved = Math.round((config.opacity ?? 0.9) * 100);
+    opacitySlider.value = saved;
+    if (opacityValue) opacityValue.textContent = saved + '%';
+  }
 }
 
 // ─── Machine Cards ───────────────────────────────────────────────

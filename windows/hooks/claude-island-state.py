@@ -234,6 +234,11 @@ def main():
             send_event(state, host, port)
             sys.exit(0)
 
+        if tool_name == "ExitPlanMode":
+            state["status"] = "plan_ready"
+            send_event(state, host, port)
+            sys.exit(0)
+
         state["status"] = "running_tool"
 
     elif event == "PostToolUse":

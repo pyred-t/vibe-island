@@ -30,30 +30,41 @@ const MarkdownLite = (() => {
     html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
     html = html.replace(/__(.+?)__/g, '<strong>$1</strong>');
 
-    // Italic: *text* or _text_ (but not inside words with underscores)
+    // Italic: *text* or _text_
     html = html.replace(/(?<!\w)\*([^*\n]+)\*(?!\w)/g, '<em>$1</em>');
     html = html.replace(/(?<!\w)_([^_\n]+)_(?!\w)/g, '<em>$1</em>');
 
-    // Headings: # H1, ## H2, ### H3
+    // Headings
     html = html.replace(/^### (.+)$/gm, '<div class="md-h3">$1</div>');
     html = html.replace(/^## (.+)$/gm, '<div class="md-h2">$1</div>');
     html = html.replace(/^# (.+)$/gm, '<div class="md-h1">$1</div>');
 
-    // Unordered lists: - item or * item
-    html = html.replace(/^[\-\*] (.+)$/gm, '<div class="md-li">• $1</div>');
-
-    // Ordered lists: 1. item
-    html = html.replace(/^\d+\. (.+)$/gm, '<div class="md-li-ordered">$1</div>');
-
-    // Links: [text](url)
+    // Links
     html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a class="md-link" href="$2" title="$2">$1</a>');
 
-    // Line breaks → <br> (but not inside code blocks)
+    // Lists — group consecutive list lines into <ul>/<ol>
+    html = html.replace(/((?:^[\-\*] .+\n?)+)/gm, (block) => {
+      const items = block.trim().split('\n').map(line =>
+        `<li>${line.replace(/^[\-\*] /, '')}</li>`
+      ).join('');
+      return `<ul class="md-ul">${items}</ul>`;
+    });
+    html = html.replace(/((?:^\d+\. .+\n?)+)/gm, (block) => {
+      const items = block.trim().split('\n').map(line =>
+        `<li>${line.replace(/^\d+\. /, '')}</li>`
+      ).join('');
+      return `<ol class="md-ol">${items}</ol>`;
+    });
+
+    // Line breaks — collapse multiple blank lines into one
+    html = html.replace(/\n{2,}/g, '\n');
     html = html.replace(/\n/g, '<br>');
 
-    // Clean up double <br> from code blocks
+    // Clean up <br> around block elements
     html = html.replace(/<\/pre><br>/g, '</pre>');
     html = html.replace(/<br><pre/g, '<pre');
+    html = html.replace(/<\/(ul|ol|div)><br>/g, '</$1>');
+    html = html.replace(/<br><(ul|ol|div)/g, '<$1');
 
     return html;
   }

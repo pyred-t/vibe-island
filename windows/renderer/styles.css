@@ -3,7 +3,7 @@
    ═══════════════════════════════════════════════════════════════ */
 
 :root {
-  --bg-primary: rgba(18, 18, 24, 0.96);
+  --bg-primary: rgba(18, 18, 24, 0.9);
   --bg-secondary: rgba(28, 28, 38, 0.85);
   --bg-tertiary: rgba(38, 38, 52, 0.8);
   --bg-card: rgba(32, 32, 46, 0.7);
@@ -58,6 +58,11 @@ html, body {
   overflow: hidden;
   user-select: none;
   -webkit-app-region: no-drag;
+}
+
+.interaction-question, .session-tool-name, .permission-preview, .markdown-content {
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 /* ─── App Container ──────────────────────────────────────────── */
@@ -428,8 +433,33 @@ html, body {
   font-size: 12px;
   color: var(--text-secondary);
   margin-bottom: 8px;
-  line-height: 1.5;
+  line-height: 1.4;
 }
+
+.interaction-question .md-ul,
+.interaction-question .md-ol {
+  margin: 2px 0;
+  padding-left: 16px;
+}
+
+.interaction-question li {
+  margin: 1px 0;
+  line-height: 1.4;
+}
+
+.interaction-question .md-h1,
+.interaction-question .md-h2,
+.interaction-question .md-h3 {
+  font-weight: 600;
+  margin: 4px 0 2px;
+  color: var(--text-primary);
+}
+
+.interaction-question .md-h1 { font-size: 13px; }
+.interaction-question .md-h2 { font-size: 12px; }
+.interaction-question .md-h3 { font-size: 12px; opacity: 0.85; }
+
+.interaction-question br + br { display: none; }
 
 .interaction-input-row {
   display: flex;
