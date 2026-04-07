@@ -56,6 +56,7 @@ function createWindow() {
     skipTaskbar: true,
     alwaysOnTop: false,
     show: false,
+    thickFrame: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -69,45 +70,53 @@ function createWindow() {
   mainWindow.setAlwaysOnTop(false, 'pop-up-menu');
 
   mainWindow.on('blur', () => {
-    if (!isQuitting && !isPinned && mainWindow && mainWindow.isVisible()) {
-      // Small delay so clicking tray icon doesn't instantly hide
+    if (!isQuitting && !isPinned) {
       setTimeout(() => {
-        if (mainWindow && !mainWindow.isFocused()) mainWindow.hide();
-      }, 200);
+        if (mainWindow && !mainWindow.isFocused()) hideWindow();
+      }, 150);
     }
   });
 
   mainWindow.on('close', (e) => {
     if (!isQuitting) {
       e.preventDefault();
-      mainWindow.hide();
+      hideWindow();
     }
   });
 }
 
+let isWindowVisible = false;
+
 function showWindow() {
   if (!mainWindow) return;
+  if (isWindowVisible) return;
 
-  // If already visible, don't reposition or re-focus (avoids flicker)
-  if (mainWindow.isVisible()) return;
-
-  // Reposition near tray area (bottom-right)
-  const { width: screenWidth, height: screenHeight } = screen.getPrimaryDisplay().workAreaSize;
-  const [winWidth, winHeight] = mainWindow.getSize();
-  mainWindow.setPosition(screenWidth - winWidth - 12, screenHeight - winHeight - 12);
-
+  isWindowVisible = true;
+  mainWindow.setOpacity(0);
   mainWindow.show();
-  // On Windows, force focus so blur event fires when clicking outside
-  if (isPinned) mainWindow.setAlwaysOnTop(true, 'pop-up-menu');
+  // Briefly force to top so it appears above other windows, then restore pin state
+  mainWindow.setAlwaysOnTop(true, 'pop-up-menu');
   mainWindow.moveTop();
   mainWindow.focus();
-  mainWindow.setAlwaysOnTop(true, 'pop-up-menu');
+  setTimeout(() => {
+    if (mainWindow) {
+      mainWindow.setOpacity(1);
+      if (!isPinned) mainWindow.setAlwaysOnTop(false);
+    }
+  }, 50);
+}
+
+function hideWindow() {
+  if (!mainWindow || !isWindowVisible) return;
+  isWindowVisible = false;
+  mainWindow.setOpacity(0);
+  mainWindow.hide();
 }
 
 function toggleWindow() {
   if (!mainWindow) return;
-  if (mainWindow.isVisible()) {
-    mainWindow.hide();
+  if (isWindowVisible) {
+    hideWindow();
   } else {
     showWindow();
   }
@@ -303,7 +312,7 @@ function setupIPC() {
   // ─── Window ─────────────────────────────────────────────────────
 
   ipcMain.on('hide-window', () => {
-    if (mainWindow) mainWindow.hide();
+    if (mainWindow) hideWindow();
   });
 
   ipcMain.handle('toggle-pin', () => {
