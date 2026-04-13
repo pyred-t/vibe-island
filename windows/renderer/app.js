@@ -511,15 +511,16 @@ function _appendDynamicSections(card, session) {
     permSection.className = 'permission-section';
 
     if (p.toolName === 'ExitPlanMode') {
-      // Render plan content instead of generic tool preview
       const planText = (session.activePlan && session.activePlan.plan) || '';
       const content = document.createElement('div');
       content.className = 'interaction-question';
       content.innerHTML = planText ? MarkdownLite.render(planText) : '(no plan content)';
       permSection.appendChild(content);
-    } else {
-      permSection.appendChild(CodePreview.buildPermissionPreview(p));
+      card.appendChild(permSection);
+      return;
     }
+
+    permSection.appendChild(CodePreview.buildPermissionPreview(p));
 
     const actions = document.createElement('div');
     actions.className = 'permission-actions';

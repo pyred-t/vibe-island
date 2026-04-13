@@ -63,6 +63,7 @@ class SessionStore extends EventEmitter {
       };
     } else if (prevPhase === SessionPhase.WAITING_FOR_APPROVAL && session.phase !== SessionPhase.WAITING_FOR_APPROVAL) {
       session.activePermission = null;
+      session.activePlan = null;
     }
 
     // Handle interaction context (AskUserQuestion)

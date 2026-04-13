@@ -235,7 +235,11 @@ def main():
             sys.exit(0)
 
         if tool_name == "ExitPlanMode":
-            state["status"] = "plan_ready"
+            # Fire-and-forget: display plan in app, Claude Code handles approval itself
+            state["status"] = "waiting_for_approval"
+            tool_use_id = data.get("tool_use_id")
+            if tool_use_id:
+                state["tool_use_id"] = tool_use_id
             send_event(state, host, port)
             sys.exit(0)
 
