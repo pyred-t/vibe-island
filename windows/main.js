@@ -66,8 +66,7 @@ function createWindow() {
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 
-  // Use 'pop-up-menu' level so blur fires reliably when clicking outside
-  mainWindow.setAlwaysOnTop(false, 'pop-up-menu');
+
 
   mainWindow.on('blur', () => {
     if (!isQuitting && !isPinned) {
@@ -99,7 +98,7 @@ function showWindow() {
   mainWindow.moveTop();
   mainWindow.focus();
   setTimeout(() => {
-    if (mainWindow) {
+    if (mainWindow && isWindowVisible) {
       mainWindow.setOpacity(1);
       if (!isPinned) mainWindow.setAlwaysOnTop(false);
     }
@@ -154,6 +153,12 @@ function setupIPC() {
   ipcMain.handle('deny-interaction', (_event, sessionId, toolUseId, reason) => {
     const success = hookServer.denyInteraction(toolUseId, reason || 'Dismissed by user');
     if (success) SessionStore.interactionSubmitted(sessionId, toolUseId);
+    return success;
+  });
+
+  ipcMain.handle('release-interaction', (_event, sessionId, toolUseId) => {
+    const success = hookServer.releaseInteraction(toolUseId);
+    if (success) SessionStore.interactionReleased(sessionId, toolUseId);
     return success;
   });
 
@@ -318,7 +323,7 @@ function setupIPC() {
   ipcMain.handle('toggle-pin', () => {
     if (!mainWindow) return false;
     isPinned = !isPinned;
-    mainWindow.setAlwaysOnTop(isPinned, 'floating');
+    mainWindow.setAlwaysOnTop(isPinned, 'pop-up-menu');
     return isPinned;
   });
 
@@ -337,6 +342,11 @@ function setupIPC() {
 function wireEvents() {
   // Hook server → Session store
   hookServer.on('hookEvent', (event) => {
+    // Inject intercept flag for AskUserQuestion based on current config
+    if (event.event === 'PreToolUse' && event.tool === 'AskUserQuestion') {
+      event.intercept = !!configStore.get('interceptAskUserQuestion');
+    }
+
     SessionStore.processHookEvent(event);
 
     // Cancel stale permissions on Stop events
@@ -374,6 +384,28 @@ function wireEvents() {
       newPhase !== SessionPhase.ENDED
     ) {
       showWindow();
+    }
+
+    // Auto-release timeout for intercepted AskUserQuestion
+    if (
+      newPhase === SessionPhase.WAITING_FOR_INPUT &&
+      session.activeInteraction &&
+      configStore.get('interceptAskUserQuestion')
+    ) {
+      const timeout = configStore.get('interceptTimeout') ?? 30;
+      if (timeout > 0) {
+        const capturedToolUseId = session.activeInteraction.toolUseId;
+        const capturedSessionId = session.sessionId;
+        setTimeout(() => {
+          const current = SessionStore.getSession(capturedSessionId);
+          if (current && current.activeInteraction &&
+              current.activeInteraction.toolUseId === capturedToolUseId) {
+            console.log(`[Session] Auto-releasing AskUserQuestion ${capturedToolUseId} after ${timeout}s timeout`);
+            hookServer.releaseInteraction(capturedToolUseId);
+            SessionStore.interactionReleased(capturedSessionId, capturedToolUseId);
+          }
+        }, timeout * 1000);
+      }
     }
   });
 

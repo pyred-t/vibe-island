@@ -130,6 +130,20 @@
             <span id="opacityValue" style="width:36px;text-align:right;font-size:12px;color:var(--text-muted)">90%</span>
           </div>
 
+          <!-- Interaction Intercept -->
+          <h3 class="settings-section-title" id="sLabel_interaction" style="margin-top:18px">Interaction</h3>
+          <div class="setting-row">
+            <label id="sLabel_interceptAsk">Answer questions in Claude Island</label>
+            <label class="toggle">
+              <input type="checkbox" id="interceptAskToggle" />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="setting-row" id="interceptTimeoutRow" style="display:none">
+            <label id="sLabel_interceptTimeout">Auto-release timeout (s, 0=never)</label>
+            <input type="number" id="interceptTimeoutInput" class="setting-input" min="0" max="300" step="5" style="width:72px" />
+          </div>
+
         </div>
       </div>
     </div>
@@ -172,8 +186,20 @@
   <script src="i18n.js"></script>
   <script src="pixel-icons.js"></script>
   <script src="notifications.js"></script>
+  <script src="lib/marked.min.js"></script>
+  <script>
+    // Compatibility shim — existing call sites use MarkdownLite.render()
+    marked.setOptions({ breaks: true, gfm: true });
+    // Sanitize javascript: hrefs to prevent XSS
+    const _markedRenderer = new marked.Renderer();
+    const _origLink = _markedRenderer.link.bind(_markedRenderer);
+    _markedRenderer.link = function(href, title, text) {
+      if (href && /^javascript:/i.test(href.trim())) href = '#';
+      return _origLink(href, title, text);
+    };
+    const MarkdownLite = { render: (md) => marked.parse(md || '', { renderer: _markedRenderer }) };
+  </script>
   <script src="code-preview.js"></script>
-  <script src="markdown-lite.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

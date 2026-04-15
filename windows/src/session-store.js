@@ -201,7 +201,7 @@ class SessionStore extends EventEmitter {
   }
 
   /**
-   * Handle interaction being submitted
+   * Handle interaction being submitted (user answered in Claude Island UI)
    */
   interactionSubmitted(sessionId, toolUseId) {
     const session = this._sessions.get(sessionId);
@@ -210,6 +210,23 @@ class SessionStore extends EventEmitter {
     if (session.activeInteraction && session.activeInteraction.toolUseId === toolUseId) {
       session.activeInteraction = null;
       session.phase = SessionPhase.PROCESSING;
+      this.emit('sessionUpdated', session);
+      this.emit('changed', this.getAllSessions());
+    }
+  }
+
+  /**
+   * Handle interaction being released to Claude Code terminal.
+   * The hook exits 0 with no output; Claude Code prompts the user in the terminal.
+   */
+  interactionReleased(sessionId, toolUseId) {
+    const session = this._sessions.get(sessionId);
+    if (!session) return;
+
+    if (session.activeInteraction && session.activeInteraction.toolUseId === toolUseId) {
+      session.activeInteraction = null;
+      // Claude Code is now handling the prompt — keep WAITING_FOR_INPUT
+      // so the UI shows Claude is still awaiting user response (just in terminal)
       this.emit('sessionUpdated', session);
       this.emit('changed', this.getAllSessions());
     }

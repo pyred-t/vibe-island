@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld('claudeIsland', {
     ipcRenderer.invoke('submit-interaction', sessionId, toolUseId, input),
   denyInteraction: (sessionId, toolUseId, reason) =>
     ipcRenderer.invoke('deny-interaction', sessionId, toolUseId, reason),
+  releaseInteraction: (sessionId, toolUseId) =>
+    ipcRenderer.invoke('release-interaction', sessionId, toolUseId),
 
   // Session management
   archiveSession: (sessionId) => ipcRenderer.invoke('archive-session', sessionId),

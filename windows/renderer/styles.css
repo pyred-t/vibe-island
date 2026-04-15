@@ -488,6 +488,50 @@ html, body {
   color: var(--text-muted);
 }
 
+.interaction-answer-wrap {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.interaction-answer-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 12px;
+  padding: 8px 10px;
+  font-family: 'Inter', sans-serif;
+  outline: none;
+  resize: vertical;
+  transition: border-color var(--transition-fast);
+}
+
+.interaction-answer-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.interaction-answer-input::placeholder {
+  color: var(--text-muted);
+}
+
+.interaction-btn-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.interaction-countdown {
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: 0.7;
+  text-align: right;
+}
+
 /* ─── Buttons ────────────────────────────────────────────────── */
 
 .btn {

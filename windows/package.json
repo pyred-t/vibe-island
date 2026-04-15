@@ -1,10 +1,11 @@
 {
   "name": "claude-island-windows",
-  "version": "1.0.0",
+  "version": "0.1.0-pre",
   "description": "Claude Island for Windows — System tray app for Claude Code session monitoring",
   "main": "main.js",
   "scripts": {
     "start": "start.bat",
+    "build": "electron-builder --win --x64",
     "test-hook": "node test/send-test-event.js",
     "test-all": "node test/send-test-event.js all",
     "test-permission": "node test/send-test-event.js permission"
@@ -12,6 +13,33 @@
   "author": "",
   "license": "Apache-2.0",
   "devDependencies": {
-    "electron": "^33.0.0"
+    "electron": "^33.0.0",
+    "electron-builder": "^26.8.1"
+  },
+  "build": {
+    "appId": "com.claude-island.windows",
+    "productName": "Claude Island",
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "renderer/**/*",
+      "hooks/**/*",
+      "assets/**/*",
+      "start.bat"
+    ],
+    "directories": {
+      "output": "dist"
+    }
   }
 }

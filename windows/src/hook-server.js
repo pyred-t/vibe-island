@@ -169,10 +169,12 @@ class HookServer extends EventEmitter {
 
   /**
    * Check if an event expects a response
+   * AskUserQuestion expects a response when the interceptAskUserQuestion flag is set.
    */
   _eventExpectsResponse(event) {
     if (event.event === 'PermissionRequest') return true;
     if (event.status === 'waiting_for_approval') return true;
+    if (event.event === 'PreToolUse' && event.tool === 'AskUserQuestion' && event.intercept) return true;
     return false;
   }
 
@@ -182,8 +184,7 @@ class HookServer extends EventEmitter {
   _getResponseKind(event) {
     if (event.event === 'PermissionRequest') return 'permission';
     if (event.status === 'waiting_for_approval') return 'permission';
-    // AskUserQuestion is fire-and-forget from hook side, but we still
-    // emit it as an event so session-store can set activeInteraction for UI display
+    if (event.event === 'PreToolUse' && event.tool === 'AskUserQuestion' && event.intercept) return 'interaction';
     return 'none';
   }
 
@@ -212,7 +213,8 @@ class HookServer extends EventEmitter {
   }
 
   /**
-   * Respond to a pending interaction
+   * Respond to a pending interaction (user answered in Claude Island UI).
+   * Sends { updatedInput } which Python detects and formats as hookSpecificOutput.
    */
   respondToInteraction(toolUseId, updatedInput) {
     const pending = this._pendingInteractions.get(toolUseId);
@@ -223,13 +225,37 @@ class HookServer extends EventEmitter {
 
     this._pendingInteractions.delete(toolUseId);
 
-    const response = { decision: null, reason: null, updatedInput };
+    // { updatedInput } — Python detects this and emits hookSpecificOutput with the answers
+    const response = { updatedInput };
 
     try {
       pending.socket.end(JSON.stringify(response));
       return true;
     } catch (err) {
       console.error('Failed to send interaction response:', err);
+      try { pending.socket.destroy(); } catch (e) {}
+      return false;
+    }
+  }
+
+  /**
+   * Release a pending interaction — user chose to answer in Claude Code terminal.
+   * Sends { release: true }; Python exits 0 with no stdout, Claude Code handles natively.
+   */
+  releaseInteraction(toolUseId) {
+    const pending = this._pendingInteractions.get(toolUseId);
+    if (!pending) {
+      console.warn(`No pending interaction for toolUseId: ${toolUseId}`);
+      return false;
+    }
+
+    this._pendingInteractions.delete(toolUseId);
+
+    try {
+      pending.socket.end(JSON.stringify({ release: true }));
+      return true;
+    } catch (err) {
+      console.error('Failed to release interaction:', err);
       try { pending.socket.destroy(); } catch (e) {}
       return false;
     }

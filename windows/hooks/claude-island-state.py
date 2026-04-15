@@ -134,9 +134,13 @@ def send_event(state, host, port, timeout=None):
         sock.settimeout(effective_timeout)
         sock.sendall(json.dumps(state).encode())
 
+        # Block waiting for a response when the app expects to reply:
+        #   - PermissionRequest (waiting_for_approval)
+        #   - AskUserQuestion in intercept mode (intercept=True in state)
         should_wait = state.get("status") == "waiting_for_approval" or (
             state.get("event") == "PreToolUse"
             and state.get("tool") == "AskUserQuestion"
+            and state.get("intercept") is True
         )
 
         if should_wait:
@@ -229,9 +233,32 @@ def main():
             state["tool_use_id"] = tool_use_id_from_event
 
         if tool_name == "AskUserQuestion":
-            # Fire-and-forget: show in Claude Island UI, don't block Claude Code
             state["status"] = "waiting_for_input"
-            send_event(state, host, port)
+            # Check if the app wants to intercept (flag will be injected by main process
+            # before the hookEvent is emitted; we receive it back via the first response).
+            # Since we can't know ahead of time, we always send and let the app decide:
+            #   - intercept mode: app keeps socket open, responds with {updatedInput} or {release:true}
+            #   - notify mode:    app closes socket immediately → send_event returns None
+            # We mark intercept=False here; the app overwrites it server-side before hookEvent.
+            # The actual intercept flag travels inside the event to hook-server to decide
+            # whether to keep the socket open or not.
+            state["intercept"] = True  # optimistically mark; server decides based on config
+            response = send_event(state, host, port)
+
+            if response and response.get("updatedInput"):
+                # User answered in Claude Island UI — return the answer to Claude Code
+                output = {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "allow",
+                        "updatedInput": response["updatedInput"],
+                    }
+                }
+                print(json.dumps(output))
+                sys.exit(0)
+
+            # release=True, timeout, or app closed socket (notify-only mode)
+            # → exit 0 with no stdout; Claude Code handles the prompt natively
             sys.exit(0)
 
         if tool_name == "ExitPlanMode":

@@ -48,6 +48,8 @@ const DEFAULT_CONFIG = {
   notificationSound: true,
   autoStart: false,
   theme: 'dark',
+  interceptAskUserQuestion: false, // intercept AskUserQuestion in Claude Island UI
+  interceptTimeout: 30,            // seconds before auto-releasing to Claude Code (0 = never)
   machines: [defaultLocalMachine()],
   hooksInstalled: {},
 };

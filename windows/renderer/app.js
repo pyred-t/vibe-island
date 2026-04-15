@@ -220,6 +220,27 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
+  // Intercept AskUserQuestion toggle
+  const interceptToggle = document.getElementById('interceptAskToggle');
+  const interceptTimeoutRow = document.getElementById('interceptTimeoutRow');
+  if (interceptToggle) {
+    interceptToggle.addEventListener('change', () => {
+      const val = interceptToggle.checked;
+      window.claudeIsland.setConfig('interceptAskUserQuestion', val);
+      if (interceptTimeoutRow) interceptTimeoutRow.style.display = val ? '' : 'none';
+    });
+  }
+
+  // Intercept timeout input
+  const interceptTimeoutInput = document.getElementById('interceptTimeoutInput');
+  if (interceptTimeoutInput) {
+    interceptTimeoutInput.addEventListener('change', () => {
+      const val = Math.max(0, parseInt(interceptTimeoutInput.value) || 0);
+      interceptTimeoutInput.value = val;
+      window.claudeIsland.setConfig('interceptTimeout', val);
+    });
+  }
+
   // Auth dialog buttons
   document.getElementById('authDialogCopyBtn')?.addEventListener('click', () => {
     navigator.clipboard.writeText('ssh-add').catch(() => {});
@@ -613,7 +634,7 @@ function createSessionCard(session) {
     card.appendChild(permSection);
   }
 
-  // Interaction section (read-only display of AskUserQuestion)
+  // Interaction section (AskUserQuestion)
   if (session.phase === 'waiting_for_input' && session.activeInteraction) {
     let toolInput = session.activeInteraction.toolInput || {};
     // tool_input may arrive as a JSON string — parse it
@@ -623,7 +644,12 @@ function createSessionCard(session) {
     const interactionSection = document.createElement('div');
     interactionSection.className = 'interaction-section';
 
+    const isIntercept = !!config.interceptAskUserQuestion;
+    const sessionId = session.sessionId;
+    const toolUseId = session.activeInteraction.toolUseId;
     const questions = toolInput.questions;
+
+    // ── Question display ──────────────────────────────────────
     if (questions && Array.isArray(questions) && questions.length > 0) {
       let html = '';
       for (const q of questions) {
@@ -638,20 +664,79 @@ function createSessionCard(session) {
             }).join('') + '</div>';
         }
         html += `${header}
-          <div class="interaction-question">${typeof MarkdownLite !== 'undefined' ? MarkdownLite.render(questionText) : escapeHtml(questionText)}</div>
+          <div class="interaction-question">${MarkdownLite.render(questionText)}</div>
           ${optionsHtml}`;
       }
       interactionSection.innerHTML = html;
     } else {
-      // Simple text question or raw tool_input — render as readable content
       const q = toolInput.question || '';
       if (q) {
-        interactionSection.innerHTML = `<div class="interaction-question">${typeof MarkdownLite !== 'undefined' ? MarkdownLite.render(q) : escapeHtml(q)}</div>`;
+        interactionSection.innerHTML = `<div class="interaction-question">${MarkdownLite.render(q)}</div>`;
       } else {
-        // Fallback: render tool_input as formatted JSON
         const json = JSON.stringify(toolInput, null, 2);
         interactionSection.innerHTML = `<pre class="perm-code">${escapeHtml(json)}</pre>`;
       }
+    }
+
+    // ── Intercept mode: answer textarea + buttons + countdown ─
+    if (isIntercept && toolUseId) {
+      const answerWrap = document.createElement('div');
+      answerWrap.className = 'interaction-answer-wrap';
+
+      const textarea = document.createElement('textarea');
+      textarea.className = 'interaction-answer-input';
+      textarea.placeholder = 'Type your answer here...';
+      textarea.rows = 3;
+      answerWrap.appendChild(textarea);
+
+      const btnRow = document.createElement('div');
+      btnRow.className = 'interaction-btn-row';
+
+      // Submit button
+      const submitBtn = document.createElement('button');
+      submitBtn.className = 'btn btn-primary btn-sm';
+      submitBtn.textContent = 'Answer';
+      submitBtn.addEventListener('click', async () => {
+        const answer = textarea.value.trim();
+        if (!answer) return;
+        _clearInteractionTimer(toolUseId);
+        // Build updatedInput with answers mapped to question text
+        const updatedInput = Object.assign({}, toolInput);
+        if (questions && questions.length > 0) {
+          updatedInput.questions = questions; // echo original
+          updatedInput.answers = {};
+          for (const q of questions) updatedInput.answers[q.question] = answer;
+        } else {
+          updatedInput.answer = answer;
+        }
+        await window.claudeIsland.submitInteraction(sessionId, toolUseId, updatedInput);
+      });
+      btnRow.appendChild(submitBtn);
+
+      // Release button
+      const releaseBtn = document.createElement('button');
+      releaseBtn.className = 'btn btn-ghost btn-sm';
+      releaseBtn.textContent = 'Answer in terminal ↗';
+      releaseBtn.title = 'Release to Claude Code terminal';
+      releaseBtn.addEventListener('click', async () => {
+        _clearInteractionTimer(toolUseId);
+        await window.claudeIsland.releaseInteraction(sessionId, toolUseId);
+      });
+      btnRow.appendChild(releaseBtn);
+
+      answerWrap.appendChild(btnRow);
+
+      // Countdown
+      const timeout = config.interceptTimeout ?? 30;
+      if (timeout > 0) {
+        const countdownEl = document.createElement('div');
+        countdownEl.className = 'interaction-countdown';
+        countdownEl.id = `countdown-${toolUseId}`;
+        _startInteractionTimer(toolUseId, timeout, countdownEl, releaseBtn);
+        answerWrap.appendChild(countdownEl);
+      }
+
+      interactionSection.appendChild(answerWrap);
     }
 
     card.appendChild(interactionSection);
@@ -673,6 +758,42 @@ async function handleDeny(sessionId, toolUseId) {
 }
 async function handleArchive(sessionId) {
   await window.claudeIsland.archiveSession(sessionId);
+}
+
+// ─── Interaction Countdown Timers ────────────────────────────────
+const _interactionTimers = new Map(); // toolUseId → intervalId
+
+function _startInteractionTimer(toolUseId, totalSeconds, countdownEl, releaseBtn) {
+  _clearInteractionTimer(toolUseId);
+  let remaining = totalSeconds;
+  const update = () => {
+    if (countdownEl) {
+      countdownEl.textContent = `Auto-releasing to terminal in ${remaining}s…`;
+    }
+  };
+  update();
+  const id = setInterval(() => {
+    remaining--;
+    update();
+    if (remaining <= 0) {
+      clearInterval(id);
+      _interactionTimers.delete(toolUseId);
+      // Trigger the release button click so the IPC call is made
+      if (releaseBtn) releaseBtn.click();
+    }
+  }, 1000);
+  _interactionTimers.set(toolUseId, id);
+}
+
+function _clearInteractionTimer(toolUseId) {
+  const id = _interactionTimers.get(toolUseId);
+  if (id !== undefined) {
+    clearInterval(id);
+    _interactionTimers.delete(toolUseId);
+  }
+  // Also clear any DOM countdown element
+  const el = document.getElementById(`countdown-${toolUseId}`);
+  if (el) el.remove();
 }
 
 // ─── Settings ───────────────────────────────────────────────────
@@ -703,6 +824,18 @@ function renderSettings() {
     const saved = Math.round((config.opacity ?? 0.9) * 100);
     opacitySlider.value = saved;
     if (opacityValue) opacityValue.textContent = saved + '%';
+  }
+
+  // Intercept settings
+  const interceptToggle = document.getElementById('interceptAskToggle');
+  const interceptTimeoutRow = document.getElementById('interceptTimeoutRow');
+  const interceptTimeoutInput = document.getElementById('interceptTimeoutInput');
+  if (interceptToggle) {
+    interceptToggle.checked = !!config.interceptAskUserQuestion;
+    if (interceptTimeoutRow) interceptTimeoutRow.style.display = config.interceptAskUserQuestion ? '' : 'none';
+  }
+  if (interceptTimeoutInput) {
+    interceptTimeoutInput.value = config.interceptTimeout ?? 30;
   }
 }
 

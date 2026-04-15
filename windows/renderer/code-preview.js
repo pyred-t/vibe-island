@@ -63,7 +63,7 @@ const CodePreview = (() => {
     if (desc) {
       const descEl = document.createElement('div');
       descEl.className = 'perm-description';
-      descEl.innerHTML = typeof MarkdownLite !== 'undefined' ? MarkdownLite.render(desc) : _esc(desc);
+      descEl.innerHTML = MarkdownLite.render(desc);
       el.appendChild(descEl);
     }
 
